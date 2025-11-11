@@ -1,8 +1,8 @@
 import os
 from os import path
 import logging
-from typing import Literal
-
+from typing import Literal, Dict
+import json
 import cv2
 # fix conflicts between qt5 and cv2
 os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH")
@@ -57,6 +57,11 @@ class MainController():
         self.amp = cfg['amp']
 
         # initializing the network(s)
+        self.object_labels: Dict[int, str] = {}
+        self.labels_file_path = path.join(self.cfg['workspace'], 'object_labels.json')
+        self.load_labels()
+        # Update num_objects from loaded labels if higher
+        cfg['num_objects'] = max(cfg['num_objects'], max(self.object_labels.keys()) if self.object_labels else 0)
         self.initialize_networks()
 
         # main components
@@ -64,6 +69,7 @@ class MainController():
         if 'workspace_init_only' in cfg and cfg['workspace_init_only']:
             return
         self.processor = InferenceCore(self.cutie, self.cfg)
+        self.num_objects = cfg['num_objects'] # Re-set num_objects after potential update
         self.gui = GUI(self, self.cfg)
 
         # initialize control info
@@ -125,10 +131,31 @@ class MainController():
         self._try_load_layer('./docs/uiuc.png')
         self.gui.set_object_color(self.curr_object)
         self.update_config()
+        self.gui.update_object_label(self.object_labels.get(self.curr_object, ""))
+
+    def load_labels(self):
+        if path.exists(self.labels_file_path):
+            try:
+                with open(self.labels_file_path, 'r') as f:
+                    loaded_data = json.load(f)
+                    # JSON keys are strings, convert them back to int
+                    self.object_labels = {int(k): v for k, v in loaded_data.items()}
+                log.info(f"Loaded {len(self.object_labels)} object labels from {self.labels_file_path}")
+            except Exception as e:
+                log.error(f"Failed to load labels: {e}")
+
+    def save_labels(self):
+        try:
+            with open(self.labels_file_path, 'w') as f:
+                json.dump(self.object_labels, f, indent=4)
+            # self.gui.text(f"Saved labels to {self.labels_file_path}")
+        except Exception as e:
+            self.gui.text(f"Error saving labels: {e}")
 
     def initialize_networks(self) -> None:
         download_models_if_needed()
         self.cutie = CUTIE(self.cfg).eval().to(self.device)
+        # Update num_objects in cfg before loading weights if it changed
         model_weights = torch.load(self.cfg.weights, map_location=self.device)
         self.cutie.load_weights(model_weights)
 
@@ -144,6 +171,7 @@ class MainController():
         self.gui.text(f'Current object changed to {number}.')
         self.gui.set_object_color(number)
         self.show_current_frame()
+        self.gui.update_object_label(self.object_labels.get(self.curr_object, ""))
 
     def click_fn(self, action: Literal['left', 'right', 'middle'], x: int, y: int):
         if self.propagating:
@@ -418,6 +446,38 @@ class MainController():
 
     def on_bitrate_dial_change(self):
         self.output_bitrate = self.gui.bitrate_dial.value()
+
+    def on_add_object(self):
+        self.reset_this_interaction() # Clear pending clicks
+        self.num_objects += 1
+        self.cfg['num_objects'] = self.num_objects # Update config
+        self.gui.object_dial.setMaximum(self.num_objects) # Update UI
+        self.res_man.add_object_directory(self.num_objects) # Create dir
+
+        # Resize probability tensor
+        if self.curr_prob is not None:
+            old_prob = self.curr_prob
+            new_shape = (self.num_objects + 1, self.h, self.w)
+            self.curr_prob = torch.zeros(new_shape, dtype=old_prob.dtype, device=self.device)
+            self.curr_prob[:old_prob.shape[0]] = old_prob
+        else:
+            # It's None, it will be created with the correct size 
+            # by convert_current_image_mask_torch when needed.
+            pass
+
+        self.gui.text(f"Added new object. Total objects: {self.num_objects}")
+        self.hit_number_key(self.num_objects) # Switch to it
+
+    def on_label_changed(self):
+        new_label = self.gui.object_label_edit.text()
+        if not new_label.strip():
+            if self.curr_object in self.object_labels:
+                del self.object_labels[self.curr_object]
+                self.gui.text(f"Removed label for object {self.curr_object}")
+        else:
+            self.object_labels[self.curr_object] = new_label
+            self.gui.text(f"Set label for object {self.curr_object} to: {new_label}")
+        self.save_labels()
 
     def update_interacted_mask(self):
         self.curr_prob = self.interacted_prob

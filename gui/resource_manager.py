@@ -211,6 +211,10 @@ class ResourceManager:
                 cv2.imwrite(path.join(self.image_dir, image_name), frame)
         print('Done!')
 
+    def add_object_directory(self, object_id: int):
+        os.makedirs(path.join(self.soft_mask_dir, f'{object_id}'), exist_ok=True)
+        log.info(f"Created soft mask directory for object {object_id}")
+
     def add_to_queue_with_warning(self, item: SaveItem):
         if self.save_queue.full():
             print(

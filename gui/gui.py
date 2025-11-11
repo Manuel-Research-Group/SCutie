@@ -6,7 +6,7 @@ from omegaconf import DictConfig
 
 from PySide6.QtWidgets import (QWidget, QComboBox, QCheckBox, QHBoxLayout, QLabel, QPushButton,
                                QTextEdit, QSpinBox, QPlainTextEdit, QVBoxLayout, QSizePolicy,
-                               QButtonGroup, QSlider, QRadioButton, QApplication, QFileDialog)
+                               QButtonGroup, QSlider, QRadioButton, QApplication, QFileDialog, QLineEdit)
 
 from PySide6.QtGui import (QKeySequence, QShortcut, QTextCursor, QImage, QPixmap, QIcon)
 from PySide6.QtCore import Qt, QTimer
@@ -80,11 +80,17 @@ class GUI(QWidget):
         self.object_dial.setMaximum(controller.num_objects)
         self.object_dial.editingFinished.connect(controller.on_object_dial_change)
 
+        self.add_object_button = QPushButton("New Object (+)")
+        self.add_object_button.clicked.connect(controller.on_add_object)
+
         self.object_color = QLabel()
         self.object_color.setMinimumSize(100, 30)
         self.object_color.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.frame_name = QLabel()
+        self.object_label_edit = QLineEdit()
+        self.object_label_edit.setPlaceholderText("Label for object...")
+        self.object_label_edit.editingFinished.connect(controller.on_label_changed)
         self.frame_name.setMinimumSize(100, 30)
         self.frame_name.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
@@ -211,8 +217,10 @@ class GUI(QWidget):
         interact_topbox.addWidget(self.reset_object_button)
         interact_botbox.addWidget(QLabel('Current object ID:'))
         interact_botbox.addWidget(self.object_dial)
+        interact_botbox.addWidget(self.add_object_button)
         interact_botbox.addWidget(self.object_color)
         interact_botbox.addWidget(self.frame_name)
+        interact_botbox.addWidget(self.object_label_edit)
         interact_subbox.addLayout(interact_topbox)
         interact_subbox.addLayout(interact_botbox)
         interact_botbox.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -354,6 +362,12 @@ class GUI(QWidget):
     def text(self, text):
         self.console.moveCursor(QTextCursor.MoveOperation.End)
         self.console.insertPlainText(text + '\n')
+
+    def update_object_label(self, label_text: str):
+        # block signals to prevent recursive call
+        self.object_label_edit.blockSignals(True)
+        self.object_label_edit.setText(label_text)
+        self.object_label_edit.blockSignals(False)
 
     def set_canvas(self, image):
         height, width, channel = image.shape
