@@ -173,8 +173,19 @@ class MainController():
         self.show_current_frame()
         self.gui.update_object_label(self.object_labels.get(self.curr_object, ""))
 
-    def click_fn(self, action: Literal['left', 'right', 'middle'], x: int, y: int):
+    def click_fn(self, action: Literal['left', 'right', 'middle', 'pick'], x: int, y: int):
         if self.propagating:
+            return
+
+        if action == 'pick':
+            target_object = self.curr_mask[int(y), int(x)]
+            
+            if target_object == 0:
+                self.gui.text("Fundo (Background) clicado. Nenhum objeto selecionado.")
+                return
+
+            self.gui.text(f"Objeto {target_object} selecionado pelo clique.")
+            self.hit_number_key(target_object)
             return
 
         last_interaction = self.interaction
@@ -294,6 +305,30 @@ class MainController():
             self.curr_ti = self.gui.tl_slider.value()
             self.load_current_image_mask()
             self.show_current_frame()
+
+    def on_jump_to_frame(self):
+        if self.propagating:
+            return
+        
+        current_text = self.gui.lcd.text()
+        
+        try:
+            target_frame_str = current_text.split('/')[0].strip()
+            target_frame = int(target_frame_str)
+
+            if 0 <= target_frame < self.length:
+                self.gui.tl_slider.setValue(target_frame)
+            else:
+                self.gui.text(f"Frame inválido: {target_frame}. Deve estar entre 0 e {self.length - 1}.")
+                self.gui.lcd.blockSignals(True)
+                self.gui.lcd.setText(f'{self.curr_ti} / {self.length - 1}')
+                self.gui.lcd.blockSignals(False)
+
+        except ValueError:
+            self.gui.text(f"Entrada inválida: '{current_text}' não é um número.")
+            self.gui.lcd.blockSignals(True)
+            self.gui.lcd.setText(f'{self.curr_ti} / {self.length - 1}')
+            self.gui.lcd.blockSignals(False)
 
     def on_forward_propagation(self):
         if self.propagating:

@@ -66,11 +66,13 @@ class GUI(QWidget):
         self.reset_object_button.clicked.connect(controller.on_reset_object)
 
         # set up the LCD
-        self.lcd = QTextEdit()
-        self.lcd.setReadOnly(True)
+        self.lcd = QLineEdit()
         self.lcd.setMaximumHeight(28)
         self.lcd.setMaximumWidth(150)
+        self.lcd.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.lcd.setText('{: 5d} / {: 5d}'.format(0, controller.T - 1))
+        # Conecta o "Enter" para a nova função no controller
+        self.lcd.returnPressed.connect(controller.on_jump_to_frame)
 
         # current object id
         self.object_dial = QSpinBox()
@@ -392,7 +394,9 @@ class GUI(QWidget):
         self.image_size = qImg.size()
 
     def update_slider(self, value):
+        self.lcd.blockSignals(True)
         self.lcd.setText('{: 3d} / {: 3d}'.format(value, self.controller.T - 1))
+        self.lcd.blockSignals(False)
         self.tl_slider.setValue(value)
 
     def pixel_pos_to_image_pos(self, x, y):
@@ -432,10 +436,12 @@ class GUI(QWidget):
 
     def forward_propagation_start(self):
         self.backward_run_button.setEnabled(False)
+        self.lcd.setReadOnly(True)
         self.forward_run_button.setText('Pause propagation')
 
     def backward_propagation_start(self):
         self.forward_run_button.setEnabled(False)
+        self.lcd.setReadOnly(True)
         self.backward_run_button.setText('Pause propagation')
 
     def pause_propagation(self):
@@ -443,6 +449,7 @@ class GUI(QWidget):
         self.backward_run_button.setEnabled(True)
         self.clear_all_mem_button.setEnabled(True)
         self.clear_non_perm_mem_button.setEnabled(True)
+        self.lcd.setReadOnly(False)
         self.forward_run_button.setText('Propagate forward')
         self.backward_run_button.setText('propagate backward')
         self.tl_slider.setEnabled(True)
@@ -455,13 +462,24 @@ class GUI(QWidget):
             return
 
         ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
-        if event.button() == Qt.MouseButton.LeftButton:
+
+        action = None
+
+        modifiers = QApplication.keyboardModifiers()
+
+        if (modifiers == Qt.KeyboardModifier.ControlModifier and 
+            event.button() == Qt.MouseButton.LeftButton):
+            action = 'pick'
+        elif event.button() == Qt.MouseButton.LeftButton:
             action = 'left'
         elif event.button() == Qt.MouseButton.RightButton:
             action = 'right'
         elif event.button() == Qt.MouseButton.MiddleButton:
             action = 'middle'
 
+        if action is None:
+            return
+        
         self.click_fn(action, ex, ey)
 
     def on_mouse_motion(self, event):
