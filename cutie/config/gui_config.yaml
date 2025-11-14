@@ -11,6 +11,11 @@ vis_endpoint: vis
 amp: True
 weights: weights/cutie-base-mega.pth
 ritm_weights: weights/coco_lvis_h18_itermask.pth
+#sam2_weights: gui/sam2/checkpoints/sam2.1_hiera_large.pt
+#sam2_config: gui/sam2/sam2/configs/sam2.1/sam2.1_hiera_l.yaml
+#sam2_model_name: "facebook/sam2-hiera-large"
+sam2_weights: "gui/sam2/checkpoints/sam2.1_hiera_large.pt"
+sam2_config: "gui/sam2/sam2/configs/sam2.1/sam2.1_hiera_l.yaml"
 
 # All "size" parameters represent the length of the shorter edge
 # maximum internal processing size; reducing this speeds up processing

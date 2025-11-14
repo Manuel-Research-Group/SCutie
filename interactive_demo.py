@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+
 # fix for Windows
 if 'QT_QPA_PLATFORM_PLUGIN_PATH' not in os.environ:
     os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = ''
@@ -42,6 +43,7 @@ if __name__ in "__main__":
     import torch
     from omegaconf import open_dict
     from hydra import compose, initialize
+    from hydra.core.global_hydra import GlobalHydra # to avoid conflicts with SAM2
     from PySide6.QtWidgets import QApplication
     import qdarktheme
     from gui.main_controller import MainController
@@ -49,6 +51,7 @@ if __name__ in "__main__":
     # logging
     log = logging.getLogger()
 
+    GlobalHydra.instance().clear()
     # getting hydra's config without using its decorator
     initialize(version_base='1.3.2', config_path="cutie/config", job_name="gui")
     cfg = compose(config_name="gui_config")

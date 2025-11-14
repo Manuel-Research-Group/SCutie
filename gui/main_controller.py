@@ -24,7 +24,8 @@ from gui.interaction import *
 from gui.interactive_utils import *
 from gui.resource_manager import ResourceManager
 from gui.gui import GUI
-from gui.click_controller import ClickController
+#from gui.click_controller import ClickController
+from gui.sam2_click_controller import SAM2ClickController
 from gui.reader import PropagationReader, get_data_loader
 from gui.exporter import convert_frames_to_video, convert_mask_to_binary
 from cutie.utils.download_models import download_models_if_needed
@@ -159,7 +160,16 @@ class MainController():
         model_weights = torch.load(self.cfg.weights, map_location=self.device)
         self.cutie.load_weights(model_weights)
 
-        self.click_ctrl = ClickController(self.cfg.ritm_weights, device=self.device)
+        #self.click_ctrl = ClickController(self.cfg.ritm_weights, device=self.device)
+        if not hasattr(self.cfg, 'sam2_weights') or not hasattr(self.cfg, 'sam2_config'):
+            log.error("sam2_weights ou sam2_config não encontrados no seu .yaml.")
+            raise ValueError("Faltando caminhos de configuração do SAM 2")
+            
+        self.click_ctrl = SAM2ClickController(
+            checkpoint_path=self.cfg.sam2_weights,
+            model_cfg_path=self.cfg.sam2_config,
+            device=self.device
+        )
 
     def hit_number_key(self, number: int):
         if number == self.curr_object:
@@ -234,6 +244,22 @@ class MainController():
                 self.curr_mask.fill(0)
             else:
                 self.curr_mask = loaded_mask.copy()
+                
+                # --- INÍCIO DA CORREÇÃO ---
+                max_id_in_mask = int(self.curr_mask.max())
+                if max_id_in_mask > self.num_objects:
+                    self.gui.text(f"Mask has object {max_id_in_mask}. Updating object count from {self.num_objects}.")
+                    # Adiciona novos diretórios de objeto para corresponder
+                    for new_id in range(self.num_objects + 1, max_id_in_mask + 1):
+                        self.res_man.add_object_directory(new_id)
+                    
+                    # Atualiza a contagem de objetos do app
+                    self.num_objects = max_id_in_mask
+                    self.cfg['num_objects'] = self.num_objects
+                    self.gui.object_dial.setMaximum(self.num_objects)
+                    self.gui.text(f"Object count set to {self.num_objects}.")
+                # --- FIM DA CORREÇÃO ---
+
             self.curr_prob = None
 
     def convert_current_image_mask_torch(self, no_mask: bool = False):
@@ -664,18 +690,31 @@ class MainController():
         shape_condition = ((len(mask.shape) == 2) and (mask.shape[-1] == self.w)
                            and (mask.shape[-2] == self.h))
 
-        object_condition = (mask.max() <= self.num_objects)
-
         if not shape_condition:
             self.gui.text(f'Expected ({self.h}, {self.w}). Got {mask.shape} instead.')
-        elif not object_condition:
-            self.gui.text(f'Expected {self.num_objects} objects. Got {mask.max()} objects instead.')
-        else:
-            self.gui.text(f'Mask file {file_name} loaded.')
-            self.curr_image_torch = self.curr_prob = None
-            self.curr_mask = mask
-            self.show_current_frame()
-            self.save_current_mask()
+            return # Adiciona um 'return' para parar a execução se a forma estiver errada
+
+        # --- INÍCIO DA CORREÇÃO ---
+        max_id_in_mask = int(mask.max())
+        if max_id_in_mask > self.num_objects:
+            self.gui.text(f"Imported mask has {max_id_in_mask} objects. Updating app count from {self.num_objects}.")
+            
+            # Adiciona novos diretórios de objeto
+            for new_id in range(self.num_objects + 1, max_id_in_mask + 1):
+                self.res_man.add_object_directory(new_id)
+            
+            # Atualiza a contagem de objetos do app
+            self.num_objects = max_id_in_mask
+            self.cfg['num_objects'] = self.num_objects
+            self.gui.object_dial.setMaximum(self.num_objects)
+        # --- FIM DA CORREÇÃO ---
+
+        # Agora que a contagem está correta, carregue a máscara
+        self.gui.text(f'Mask file {file_name} loaded.')
+        self.curr_image_torch = self.curr_prob = None
+        self.curr_mask = mask
+        self.show_current_frame()
+        self.save_current_mask()
 
     def on_import_layer(self):
         file_name = self.gui.open_file('Layer')
