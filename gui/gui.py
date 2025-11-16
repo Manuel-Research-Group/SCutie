@@ -65,6 +65,9 @@ class GUI(QWidget):
         self.reset_object_button = QPushButton('Reset object')
         self.reset_object_button.clicked.connect(controller.on_reset_object)
 
+        self.remove_object_button = QPushButton('Remove object (all frames)')
+        self.remove_object_button.clicked.connect(controller.on_remove_object_all_frames)
+
         # set up the LCD
         self.lcd = QLineEdit()
         self.lcd.setMaximumHeight(28)
@@ -217,6 +220,7 @@ class GUI(QWidget):
         interact_topbox.addWidget(self.play_button)
         interact_topbox.addWidget(self.reset_frame_button)
         interact_topbox.addWidget(self.reset_object_button)
+        interact_topbox.addWidget(self.remove_object_button)
         interact_botbox.addWidget(QLabel('Current object ID:'))
         interact_botbox.addWidget(self.object_dial)
         interact_botbox.addWidget(self.add_object_button)

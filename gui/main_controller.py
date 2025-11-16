@@ -30,8 +30,10 @@ from gui.reader import PropagationReader, get_data_loader
 from gui.exporter import convert_frames_to_video, convert_mask_to_binary
 from cutie.utils.download_models import download_models_if_needed
 
-log = logging.getLogger()
+import shutil
+from PySide6.QtWidgets import QMessageBox
 
+log = logging.getLogger()
 
 class MainController():
 
@@ -571,6 +573,70 @@ class MainController():
         self.reset_this_interaction()
         self.show_current_frame()
 
+    def on_remove_object_all_frames(self):
+        if self.propagating:
+            self.gui.text("Cannot remove object while propagating.")
+            return
+
+        object_id = self.curr_object
+        if object_id == 0:
+            self.gui.text("Cannot remove background (object 0).")
+            return
+
+        # 1. Pedir confirmação
+        reply = QMessageBox.question(self.gui, 'Confirm Permanent Removal',
+                                     f"Are you sure you want to permanently remove object {object_id} from all {self.length} frames?\n\nThis will delete all masks for this object from disk and cannot be undone.",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                     QMessageBox.StandardButton.No)
+
+        if reply != QMessageBox.StandardButton.Yes:
+            self.gui.text(f"Removal of object {object_id} cancelled.")
+            return
+
+        self.gui.text(f"Removing object {object_id} from all frames. Please wait...")
+        self.gui.process_events() # Forçar atualização da GUI
+
+        try:
+            # 2. Remover diretório de soft masks (mais rápido)
+            soft_mask_dir_obj = path.join(self.res_man.soft_mask_dir, f'{object_id}')
+            if path.exists(soft_mask_dir_obj):
+                shutil.rmtree(soft_mask_dir_obj)
+                # Recriar o diretório vazio
+                self.res_man.add_object_directory(object_id)
+
+            # 3. Iterar e remover de todas as máscaras de paleta
+            for ti in range(self.length):
+                mask = self.res_man.get_mask(ti)
+                if mask is not None:
+                    # Verificar se o objeto existe neste frame
+                    if np.any(mask == object_id):
+                        mask[mask == object_id] = 0 # Definir como background
+                        self.res_man.save_mask(ti, mask)
+                
+                # Atualizar a barra de progresso
+                if ti % 20 == 0 or ti == self.length - 1:
+                    self.gui.progressbar_update((ti + 1) / self.length)
+                    self.gui.process_events() # Manter a GUI responsiva
+
+            self.gui.progressbar_update(0) # Resetar barra
+            self.gui.text(f"Successfully removed object {object_id} from all frames.")
+
+            # 4. Remover o label (se existir)
+            if object_id in self.object_labels:
+                del self.object_labels[object_id]
+                self.save_labels()
+                if object_id == self.curr_object:
+                    self.gui.update_object_label("") # Limpar label da GUI
+
+            # 5. Atualizar a visualização atual
+            self.load_current_image_mask()
+            self.show_current_frame()
+
+        except Exception as e:
+            self.gui.text(f"An error occurred during removal: {e}")
+            log.error(f"Failed to remove object {object_id}: {e}")
+            self.gui.progressbar_update(0)
+    
     def complete_interaction(self):
         if self.interaction is not None:
             self.interaction = None
