@@ -5,7 +5,7 @@ from typing import Literal, Dict
 import json
 import cv2
 # fix conflicts between qt5 and cv2
-#os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH")
+os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH")
 
 import torch
 try:
@@ -222,6 +222,7 @@ class MainController():
 
         # initialize stuff
         self.update_memory_gauges()
+        self.update_gpu_gauges()
         self.gui.work_mem_min.setValue(self.processor.memory.min_mem_frames)
         self.gui.work_mem_max.setValue(self.processor.memory.max_mem_frames)
         self.gui.long_mem_max.setValue(self.processor.memory.max_long_tokens)
@@ -244,42 +245,6 @@ class MainController():
         self.gui.set_object_color(self.curr_object)
         self.update_config()
         self.gui.update_object_label(self.object_labels.get(self.curr_object, ""))
-
-    def on_gpu_timer(self):
-        """Função que o timer chama (e que bloqueia)."""
-        self.update_gpu_gauges()
-
-    def update_gpu_gauges(self):
-        """A função de verificação de GPU original (que bloqueia)."""
-        if 'cuda' in self.device:
-            try:
-                torch.cuda.synchronize()
-                info = torch.cuda.mem_get_info()
-                global_free, global_total = info
-                global_free /= (2**30)
-                global_total /= (2**30)
-                global_used = global_total - global_free
-
-                self.gui.gpu_mem_gauge.setFormat(f'{global_used:.1f} GB / {global_total:.1f} GB')
-                self.gui.gpu_mem_gauge.setValue(round(global_used / global_total * 100))
-
-                used_by_torch = torch.cuda.max_memory_allocated() / (2**30)
-                self.gui.torch_mem_gauge.setFormat(f'{used_by_torch:.1f} GB / {global_total:.1f} GB')
-                self.gui.torch_mem_gauge.setValue(round(used_by_torch / global_total * 100 / 1024))
-            except Exception:
-                self.gui.gpu_mem_gauge.setFormat('Erro')
-                self.gui.torch_mem_gauge.setFormat('Erro')
-        elif 'mps' in self.device:
-            mem_used = mps.current_allocated_memory() / (2**30)
-            self.gui.gpu_mem_gauge.setFormat(f'{mem_used:.1f} GB')
-            self.gui.gpu_mem_gauge.setValue(0)
-            self.gui.torch_mem_gauge.setFormat('N/A')
-            self.gui.torch_mem_gauge.setValue(0)
-        else:
-            self.gui.gpu_mem_gauge.setFormat('N/A')
-            self.gui.gpu_mem_gauge.setValue(0)
-            self.gui.torch_mem_gauge.setFormat('N/A')
-            self.gui.torch_mem_gauge.setValue(0)
 
     def load_labels(self):
         if path.exists(self.labels_file_path):
@@ -381,6 +346,7 @@ class MainController():
                 self.interaction.push_point(x, y, is_neg=(action == 'right'))
                 self.interacted_prob = self.interaction.predict().to(self.device, non_blocking=True)
                 self.update_interacted_mask()
+                self.update_gpu_gauges()
 
             elif action == 'middle':
                 # middle: select a new visualization object
@@ -612,6 +578,7 @@ class MainController():
                                                  idx_mask=False,
                                                  force_permanent=True)
             self.update_memory_gauges()
+            self.update_gpu_gauges()
 
     def on_set_reference_frame(self):
         if self.propagating:
@@ -790,6 +757,35 @@ class MainController():
             self.gui.work_mem_gauge.setValue(0)
             self.gui.long_mem_gauge.setValue(0)
 
+    def update_gpu_gauges(self):
+        if 'cuda' in self.device:
+            info = torch.cuda.mem_get_info()
+            global_free, global_total = info
+            global_free /= (2**30)
+            global_total /= (2**30)
+            global_used = global_total - global_free
+
+            self.gui.gpu_mem_gauge.setFormat(f'{global_used:.1f} GB / {global_total:.1f} GB')
+            self.gui.gpu_mem_gauge.setValue(round(global_used / global_total * 100))
+
+            used_by_torch = torch.cuda.max_memory_allocated() / (2**30)
+            self.gui.torch_mem_gauge.setFormat(f'{used_by_torch:.1f} GB / {global_total:.1f} GB')
+            self.gui.torch_mem_gauge.setValue(round(used_by_torch / global_total * 100 / 1024))
+        elif 'mps' in self.device:
+            mem_used = mps.current_allocated_memory() / (2**30)
+            self.gui.gpu_mem_gauge.setFormat(f'{mem_used:.1f} GB')
+            self.gui.gpu_mem_gauge.setValue(0)
+            self.gui.torch_mem_gauge.setFormat('N/A')
+            self.gui.torch_mem_gauge.setValue(0)
+        else:
+            self.gui.gpu_mem_gauge.setFormat('N/A')
+            self.gui.gpu_mem_gauge.setValue(0)
+            self.gui.torch_mem_gauge.setFormat('N/A')
+            self.gui.torch_mem_gauge.setValue(0)
+
+    def on_gpu_timer(self):
+        self.update_gpu_gauges()
+
     def on_work_min_change(self):
         if self.initialized:
             self.gui.work_mem_min.setValue(
@@ -821,6 +817,7 @@ class MainController():
         elif 'mps' in self.device:
             mps.empty_cache()
         self.processor.update_config(self.cfg)
+        self.update_gpu_gauges()
         self.update_memory_gauges()
 
     def on_clear_non_permanent_memory(self):
@@ -830,6 +827,7 @@ class MainController():
         elif 'mps' in self.device:
             mps.empty_cache()
         self.processor.update_config(self.cfg)
+        self.update_gpu_gauges()
         self.update_memory_gauges()
 
     def on_import_mask(self):
