@@ -5,7 +5,7 @@ from typing import Literal, Dict
 import json
 import cv2
 # fix conflicts between qt5 and cv2
-os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH")
+#os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH")
 
 import torch
 try:
@@ -30,8 +30,115 @@ from gui.reader import PropagationReader, get_data_loader
 from gui.exporter import convert_frames_to_video, convert_mask_to_binary
 from cutie.utils.download_models import download_models_if_needed
 
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QMessageBox, 
+                               QScrollArea, QGridLayout)
+from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtCore import Qt, QTimer, QThread
+
 log = logging.getLogger()
 
+class ThumbnailCard(QWidget):
+    """Um widget simples para mostrar uma imagem de thumbnail e um rótulo."""
+    def __init__(self, image_np: np.ndarray, name: str, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(5, 5, 5, 5)
+
+        self.canvas = QLabel()
+        self.canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label = QLabel(name)
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.layout.addWidget(self.canvas)
+        self.layout.addWidget(self.label)
+        
+        def click_eater(event):
+            """Consome o evento de clique para evitar 'click-through'."""
+            event.accept()
+
+        self.mousePressEvent = click_eater
+        self.canvas.mousePressEvent = click_eater
+        self.label.mousePressEvent = click_eater
+
+        thumbnail_width = 200  # Largura fixa para cada miniatura
+        
+        # --- Lógica de conversão de imagem (copiada de set_canvas) ---
+        height, width, channel = image_np.shape
+        if channel == 4:
+            image_rgb = image_np[:, :, :3].copy()
+            alpha = image_np[:, :, 3].astype(np.float32) / 255
+            green_bg = np.array([0, 255, 0])
+            image_np_rgb = (image_rgb * alpha[:, :, np.newaxis] + green_bg[np.newaxis, np.newaxis, :] *
+                            (1 - alpha[:, :, np.newaxis])).astype(np.uint8)
+            bytesPerLine = 3 * width
+            qImg = QImage(image_np_rgb.data, width, height, bytesPerLine, QImage.Format.Format_RGB888)
+        else: # RGB
+            bytesPerLine = 3 * width
+            qImg = QImage(image_np.data, width, height, bytesPerLine, QImage.Format.Format_RGB888)
+        
+        self.pixmap = QPixmap(qImg)
+        # --- Fim da lógica de conversão ---
+
+        # Redimensionar pixmap para a largura fixa, mantendo a proporção
+        scaled_pixmap = self.pixmap.scaledToWidth(thumbnail_width, Qt.TransformationMode.FastTransformation)
+        self.canvas.setPixmap(scaled_pixmap)
+
+
+class ReferenceGalleryWindow(QWidget):
+    """A janela principal da galeria, que contém os thumbnails em um grid rolável."""
+    def __init__(self, parent=None, controller=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle('Reference Frame Gallery')
+        self.setWindowFlags(Qt.WindowType.Tool)  # Janela flutuante
+        self.resize(850, 600)  # (200 * 4 colunas + margens)
+
+        # Layout principal desta janela
+        self.main_layout = QVBoxLayout(self)
+
+        # QScrollArea para permitir rolagem
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        
+        # Widget "container" que ficará dentro da scroll area
+        self.container_widget = QWidget()
+        # O layout de grid vai *dentro* do container
+        self.grid_layout = QGridLayout(self.container_widget)
+        
+        self.scroll_area.setWidget(self.container_widget)
+        self.main_layout.addWidget(self.scroll_area)
+        
+        self.num_cols = 4  # 4 colunas por linha
+        self.current_row = 0
+        self.current_col = 0
+
+        def click_eater(event):
+            """Consome o evento de clique para evitar 'click-through'."""
+            event.accept()
+
+        self.mousePressEvent = click_eater
+        self.scroll_area.mousePressEvent = click_eater
+        self.container_widget.mousePressEvent = click_eater
+
+    def add_reference(self, image_np: np.ndarray, name: str):
+        """Cria um novo ThumbnailCard e o adiciona ao grid."""
+        card = ThumbnailCard(image_np, name)
+        
+        self.grid_layout.addWidget(card, self.current_row, self.current_col)
+        
+        # Atualiza a posição no grid
+        self.current_col += 1
+        if self.current_col >= self.num_cols:
+            self.current_col = 0
+            self.current_row += 1
+
+    def closeEvent(self, event):
+        """Sobrescreve o 'fechar' para apenas esconder a janela."""
+        event.ignore()
+        self.hide()
+
+        if self.controller:
+            self.controller.ignore_next_click()
 
 class MainController():
 
@@ -71,10 +178,15 @@ class MainController():
             return
         self.processor = InferenceCore(self.cutie, self.cfg)
         self.num_objects = cfg['num_objects'] # Re-set num_objects after potential update
+        
         self.gui = GUI(self, self.cfg)
+
+        # initialize reference window
+        self.reference_gallery = ReferenceGalleryWindow(self.gui, controller=self)
 
         # initialize control info
         self.length: int = self.res_man.length
+        self.ignore_click_flag = False
         self.interaction: Interaction = None
         self.interaction_type: str = 'Click'
         self.curr_ti: int = 0
@@ -110,7 +222,6 @@ class MainController():
 
         # initialize stuff
         self.update_memory_gauges()
-        self.update_gpu_gauges()
         self.gui.work_mem_min.setValue(self.processor.memory.min_mem_frames)
         self.gui.work_mem_max.setValue(self.processor.memory.max_mem_frames)
         self.gui.long_mem_max.setValue(self.processor.memory.max_long_tokens)
@@ -133,6 +244,42 @@ class MainController():
         self.gui.set_object_color(self.curr_object)
         self.update_config()
         self.gui.update_object_label(self.object_labels.get(self.curr_object, ""))
+
+    def on_gpu_timer(self):
+        """Função que o timer chama (e que bloqueia)."""
+        self.update_gpu_gauges()
+
+    def update_gpu_gauges(self):
+        """A função de verificação de GPU original (que bloqueia)."""
+        if 'cuda' in self.device:
+            try:
+                torch.cuda.synchronize()
+                info = torch.cuda.mem_get_info()
+                global_free, global_total = info
+                global_free /= (2**30)
+                global_total /= (2**30)
+                global_used = global_total - global_free
+
+                self.gui.gpu_mem_gauge.setFormat(f'{global_used:.1f} GB / {global_total:.1f} GB')
+                self.gui.gpu_mem_gauge.setValue(round(global_used / global_total * 100))
+
+                used_by_torch = torch.cuda.max_memory_allocated() / (2**30)
+                self.gui.torch_mem_gauge.setFormat(f'{used_by_torch:.1f} GB / {global_total:.1f} GB')
+                self.gui.torch_mem_gauge.setValue(round(used_by_torch / global_total * 100 / 1024))
+            except Exception:
+                self.gui.gpu_mem_gauge.setFormat('Erro')
+                self.gui.torch_mem_gauge.setFormat('Erro')
+        elif 'mps' in self.device:
+            mem_used = mps.current_allocated_memory() / (2**30)
+            self.gui.gpu_mem_gauge.setFormat(f'{mem_used:.1f} GB')
+            self.gui.gpu_mem_gauge.setValue(0)
+            self.gui.torch_mem_gauge.setFormat('N/A')
+            self.gui.torch_mem_gauge.setValue(0)
+        else:
+            self.gui.gpu_mem_gauge.setFormat('N/A')
+            self.gui.gpu_mem_gauge.setValue(0)
+            self.gui.torch_mem_gauge.setFormat('N/A')
+            self.gui.torch_mem_gauge.setValue(0)
 
     def load_labels(self):
         if path.exists(self.labels_file_path):
@@ -186,8 +333,20 @@ class MainController():
         self.show_current_frame()
         self.gui.update_object_label(self.object_labels.get(self.curr_object, ""))
 
+    def ignore_next_click(self):
+        """Seta a flag para ignorar um clique e a reseta logo após o ciclo de eventos."""
+        self.ignore_click_flag = True
+        QTimer.singleShot(10, self.reset_ignore_click_flag)
+
+    def reset_ignore_click_flag(self):
+        self.ignore_click_flag = False
+
     def click_fn(self, action: Literal['left', 'right', 'middle', 'pick'], x: int, y: int):
         if self.propagating:
+            return
+
+        if self.ignore_click_flag:
+            self.reset_ignore_click_flag()
             return
 
         if action == 'pick':
@@ -222,7 +381,6 @@ class MainController():
                 self.interaction.push_point(x, y, is_neg=(action == 'right'))
                 self.interacted_prob = self.interaction.predict().to(self.device, non_blocking=True)
                 self.update_interacted_mask()
-                self.update_gpu_gauges()
 
             elif action == 'middle':
                 # middle: select a new visualization object
@@ -454,7 +612,32 @@ class MainController():
                                                  idx_mask=False,
                                                  force_permanent=True)
             self.update_memory_gauges()
-            self.update_gpu_gauges()
+
+    def on_set_reference_frame(self):
+        if self.propagating:
+            return
+        
+        # Garante que a vis_image está correta (não "suja" pelo fast path)
+        if self.vis_image is None or self.curr_image_torch is not None:
+            self.compose_current_im()
+
+        # Cria o nome do snapshot
+        frame_name = f"{self.res_man.names[self.curr_ti]}.jpg (T={self.curr_ti})"
+        
+        # Adiciona o snapshot (uma cópia) à galeria
+        self.reference_gallery.add_reference(self.vis_image.copy(), frame_name)
+        
+        # Envia feedback para o console da GUI, mas não abre a janela
+        self.gui.text(f"Reference snapshot for T={self.curr_ti} added to gallery.")
+
+    def on_show_references(self):
+        """Mostra ou esconde a janela da galeria de referência."""
+        if self.reference_gallery.isVisible():
+            self.reference_gallery.hide()
+        else:
+            self.reference_gallery.show()
+            self.reference_gallery.raise_()
+            self.reference_gallery.activateWindow()
 
     def on_play_video_timer(self):
         self.curr_ti += 1
@@ -583,35 +766,6 @@ class MainController():
         new_ti = min(self.curr_ti + step, self.length - 1)
         self.gui.tl_slider.setValue(new_ti)
 
-    def update_gpu_gauges(self):
-        if 'cuda' in self.device:
-            info = torch.cuda.mem_get_info()
-            global_free, global_total = info
-            global_free /= (2**30)
-            global_total /= (2**30)
-            global_used = global_total - global_free
-
-            self.gui.gpu_mem_gauge.setFormat(f'{global_used:.1f} GB / {global_total:.1f} GB')
-            self.gui.gpu_mem_gauge.setValue(round(global_used / global_total * 100))
-
-            used_by_torch = torch.cuda.max_memory_allocated() / (2**30)
-            self.gui.torch_mem_gauge.setFormat(f'{used_by_torch:.1f} GB / {global_total:.1f} GB')
-            self.gui.torch_mem_gauge.setValue(round(used_by_torch / global_total * 100 / 1024))
-        elif 'mps' in self.device:
-            mem_used = mps.current_allocated_memory() / (2**30)
-            self.gui.gpu_mem_gauge.setFormat(f'{mem_used:.1f} GB')
-            self.gui.gpu_mem_gauge.setValue(0)
-            self.gui.torch_mem_gauge.setFormat('N/A')
-            self.gui.torch_mem_gauge.setValue(0)
-        else:
-            self.gui.gpu_mem_gauge.setFormat('N/A')
-            self.gui.gpu_mem_gauge.setValue(0)
-            self.gui.torch_mem_gauge.setFormat('N/A')
-            self.gui.torch_mem_gauge.setValue(0)
-
-    def on_gpu_timer(self):
-        self.update_gpu_gauges()
-
     def update_memory_gauges(self):
         try:
             curr_perm_tokens = self.processor.memory.work_mem.perm_size(0)
@@ -667,7 +821,6 @@ class MainController():
         elif 'mps' in self.device:
             mps.empty_cache()
         self.processor.update_config(self.cfg)
-        self.update_gpu_gauges()
         self.update_memory_gauges()
 
     def on_clear_non_permanent_memory(self):
@@ -677,7 +830,6 @@ class MainController():
         elif 'mps' in self.device:
             mps.empty_cache()
         self.processor.update_config(self.cfg)
-        self.update_gpu_gauges()
         self.update_memory_gauges()
 
     def on_import_mask(self):

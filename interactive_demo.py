@@ -3,11 +3,15 @@ import os
 import sys
 
 # fix for Windows
-if 'QT_QPA_PLATFORM_PLUGIN_PATH' not in os.environ:
-    os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = ''
+#if 'QT_QPA_PLATFORM_PLUGIN_PATH' not in os.environ:
+#    os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = ''
+
+try:
+    os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH")
+except KeyError:
+    pass
 
 import signal
-
 signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 from argparse import ArgumentParser
@@ -44,9 +48,9 @@ if __name__ in "__main__":
     from omegaconf import open_dict
     from hydra import compose, initialize
     from hydra.core.global_hydra import GlobalHydra # to avoid conflicts with SAM2
+    from gui.main_controller import MainController
     from PySide6.QtWidgets import QApplication
     import qdarktheme
-    from gui.main_controller import MainController
 
     # logging
     log = logging.getLogger()

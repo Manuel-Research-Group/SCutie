@@ -40,6 +40,10 @@ class GUI(QWidget):
         self.play_button.clicked.connect(self.on_play_video)
         self.commit_button = QPushButton('Commit to permanent memory')
         self.commit_button.clicked.connect(controller.on_commit)
+        self.set_ref_frame_button = QPushButton('Set Reference')
+        self.set_ref_frame_button.clicked.connect(controller.on_set_reference_frame)
+        self.show_ref_gallery_button = QPushButton('Show References')
+        self.show_ref_gallery_button.clicked.connect(controller.on_show_references)
         self.export_video_button = QPushButton('Export as video')
         self.export_video_button.clicked.connect(controller.on_export_visualization)
         self.export_binary_button = QPushButton('Export binary masks')
@@ -263,6 +267,8 @@ class GUI(QWidget):
         control_topbox = QHBoxLayout()
         control_botbox = QHBoxLayout()
         control_topbox.addWidget(self.commit_button)
+        control_topbox.addWidget(self.set_ref_frame_button)
+        control_topbox.addWidget(self.show_ref_gallery_button)
         control_topbox.addWidget(self.forward_run_button)
         control_topbox.addWidget(self.backward_run_button)
         control_botbox.addWidget(self.progressbar)
@@ -322,7 +328,7 @@ class GUI(QWidget):
         self.gpu_timer.timeout.connect(controller.on_gpu_timer)
         self.gpu_timer.setInterval(2000)
         self.gpu_timer.start()
-
+        
         # Objects shortcuts
         for i in range(1, controller.num_objects + 1):
             QShortcut(QKeySequence(str(i)),
