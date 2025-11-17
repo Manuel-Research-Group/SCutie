@@ -139,6 +139,7 @@ class ReferenceGalleryWindow(QWidget):
 
         if self.controller:
             self.controller.ignore_next_click()
+            self.controller.gui.gpu_timer.start()
 
 class MainController():
 
@@ -236,7 +237,7 @@ class MainController():
         self.gui.on_mouse_motion_xy = self.on_mouse_motion_xy
         self.gui.click_fn = self.click_fn
 
-        self.gui.show()
+        self.gui.showMaximized()
         self.gui.text('Initialized.')
         self.initialized = True
 
@@ -602,6 +603,7 @@ class MainController():
         if self.reference_gallery.isVisible():
             self.reference_gallery.hide()
         else:
+            self.gui.gpu_timer.stop()
             self.reference_gallery.show()
             self.reference_gallery.raise_()
             self.reference_gallery.activateWindow()

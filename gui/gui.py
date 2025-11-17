@@ -328,7 +328,7 @@ class GUI(QWidget):
         self.gpu_timer.timeout.connect(controller.on_gpu_timer)
         self.gpu_timer.setInterval(2000)
         self.gpu_timer.start()
-        
+
         # Objects shortcuts
         for i in range(1, controller.num_objects + 1):
             QShortcut(QKeySequence(str(i)),
