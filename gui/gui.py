@@ -7,9 +7,9 @@ from omegaconf import DictConfig
 from PySide6.QtWidgets import (QWidget, QComboBox, QCheckBox, QHBoxLayout, QLabel, QPushButton,
                                QTextEdit, QSpinBox, QPlainTextEdit, QVBoxLayout, QSizePolicy,
                                QButtonGroup, QSlider, QRadioButton, QApplication, QFileDialog, 
-                               QLineEdit, QMenuBar, QMenu, QToolTip)
+                               QLineEdit, QMenuBar, QMenu, QToolTip, QRubberBand)
 from PySide6.QtGui import (QKeySequence, QShortcut, QTextCursor, QImage, QPixmap, QIcon, QAction, QActionGroup)
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QSize
 
 from cutie.utils.palette import davis_palette_np
 from gui.gui_utils import *
@@ -58,6 +58,27 @@ class GUI(QWidget):
         self.act_view.triggered.connect(lambda: controller.set_app_mode('view'))
         self.mode_action_group.addAction(self.act_view)
         self.mode_menu.addAction(self.act_view)
+
+        self.selection_menu = self.menu_bar.addMenu("Seleção")
+        self.selection_action_group = QActionGroup(self)
+        self.selection_action_group.setExclusive(True)
+
+        # Ferramenta: Clique (Padrão)
+        self.act_sel_click = QAction("Clique Pontual", self)
+        self.act_sel_click.setCheckable(True)
+        self.act_sel_click.setChecked(True)
+        self.act_sel_click.setShortcut("Q") # Atalho sugerido
+        self.act_sel_click.triggered.connect(lambda: controller.set_selection_tool('click'))
+        self.selection_action_group.addAction(self.act_sel_click)
+        self.selection_menu.addAction(self.act_sel_click)
+
+        # Ferramenta: Bounding Box
+        self.act_sel_bbox = QAction("Bounding Box (Retângulo)", self)
+        self.act_sel_bbox.setCheckable(True)
+        self.act_sel_bbox.setShortcut("W") # Atalho sugerido
+        self.act_sel_bbox.triggered.connect(lambda: controller.set_selection_tool('bbox'))
+        self.selection_action_group.addAction(self.act_sel_bbox)
+        self.selection_menu.addAction(self.act_sel_bbox)
 
         # set up some buttons
         self.play_button = QPushButton('Play video')
@@ -183,6 +204,9 @@ class GUI(QWidget):
         self.main_canvas.mouseMoveEvent = self.on_mouse_motion
         self.main_canvas.setMouseTracking(True)  # Required for all-time tracking
         self.main_canvas.mouseReleaseEvent = self.on_mouse_release
+
+        self.rubber_band = QRubberBand(QRubberBand.Rectangle, self.main_canvas)
+        self.origin_mouse_pos = QPoint()
 
         # clearing memory
         self.clear_all_mem_button = QPushButton('Reset all memory')
@@ -516,31 +540,58 @@ class GUI(QWidget):
         QApplication.processEvents()
 
     def on_mouse_press(self, event):
+        # 1. Verifica se o clique foi fora da imagem
         if self.is_pos_out_of_bound(event.position().x(), event.position().y()):
             return
 
+        # 2. Lógica da Bounding Box (NOVO)
+        # Só ativa se: ferramenta for 'bbox', modo for 'annotation' e for botão esquerdo
+        if (self.controller.selection_tool == 'bbox' and 
+            self.controller.app_mode == 'annotation' and 
+            event.button() == Qt.MouseButton.LeftButton):
+            
+            # Verifica se não tem modificadores (ex: Ctrl pressionado é 'pick', então ignoramos a bbox)
+            modifiers = QApplication.keyboardModifiers()
+            if modifiers != Qt.KeyboardModifier.ControlModifier:
+                self.origin_mouse_pos = event.position().toPoint()
+                self.rubber_band.setGeometry(QRect(self.origin_mouse_pos, QSize()))
+                self.rubber_band.show()
+                return  # Retorna aqui para não processar como um clique de ponto
+
+        # 3. Lógica Padrão de Cliques (EXISTENTE)
         ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
 
         action = None
-
         modifiers = QApplication.keyboardModifiers()
 
+        # Ctrl + Clique Esquerdo = Pick (Selecionar objeto clicado)
         if (modifiers == Qt.KeyboardModifier.ControlModifier and 
             event.button() == Qt.MouseButton.LeftButton):
             action = 'pick'
+        
+        # Botão Esquerdo = Clique Positivo (Add)
         elif event.button() == Qt.MouseButton.LeftButton:
             action = 'left'
+        
+        # Botão Direito = Clique Negativo (Remove)
         elif event.button() == Qt.MouseButton.RightButton:
             action = 'right'
+        
+        # Botão do Meio = Trocar visualização overlay
         elif event.button() == Qt.MouseButton.MiddleButton:
             action = 'middle'
 
         if action is None:
             return
         
+        # Chama a função de clique do controller (usando o callback definido)
         self.click_fn(action, ex, ey)
 
     def on_mouse_motion(self, event):
+        if not self.rubber_band.isHidden():
+            self.rubber_band.setGeometry(QRect(self.origin_mouse_pos, event.position().toPoint()).normalized())
+            return
+
         ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
         
         # Se estiver em modo de visualização, mostra tooltip
@@ -557,7 +608,19 @@ class GUI(QWidget):
             self.on_mouse_motion_xy(ex, ey)
 
     def on_mouse_release(self, event):
-        pass
+        # Finaliza o desenho da BBox
+        if not self.rubber_band.isHidden():
+            self.rubber_band.hide()
+            
+            # Pega o retângulo desenhado em coordenadas do widget (pixel da tela)
+            rect_widget = self.rubber_band.geometry()
+            
+            # Precisamos converter o TopLeft e o BottomRight para coordenadas da imagem real
+            x1, y1 = self.get_scaled_pos(rect_widget.left(), rect_widget.top())
+            x2, y2 = self.get_scaled_pos(rect_widget.right(), rect_widget.bottom())
+            
+            # Chama o controlador para processar a caixa
+            self.controller.on_bbox_complete(x1, y1, x2, y2)
 
     def on_play_video(self):
         if self.timer.isActive():

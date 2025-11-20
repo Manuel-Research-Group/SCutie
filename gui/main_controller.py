@@ -80,6 +80,7 @@ class MainController():
         self.interaction: Interaction = None
         self.interaction_type: str = 'Click'
         self.app_mode: str = 'annotation'
+        self.selection_tool: str = 'click'
         self.curr_ti: int = 0
         self.curr_object: int = 1
         self.propagating: bool = False
@@ -151,6 +152,29 @@ class MainController():
         # Atualiza a UI
         self.gui.toggle_mode_ui(mode)
 
+    def set_selection_tool(self, tool: str):
+        self.selection_tool = tool
+        self.gui.text(f"Ferramenta de seleção: {tool}")
+
+    def on_bbox_complete(self, x1, y1, x2, y2):
+        """
+        Chamado quando o usuário solta o mouse após desenhar um retângulo.
+        Converte a caixa em um clique no centro.
+        """
+        # Evita caixas muito pequenas (cliques acidentais arrastados)
+        if abs(x2 - x1) < 2 or abs(y2 - y1) < 2:
+            return
+
+        # Calcula o centro
+        center_x = (x1 + x2) / 2
+        center_y = (y1 + y2) / 2
+
+        self.gui.text(f"Bounding Box detectada: Centro ({center_x:.1f}, {center_y:.1f})")
+
+        # Envia como um clique esquerdo (positivo)
+        # Reutiliza a lógica existente de clique
+        self.click_fn('left', center_x, center_y)
+        
     def get_object_info_at(self, x: float, y: float) -> str:
         """
         Retorna uma string com ID e Label do objeto na coordenada x, y.
