@@ -79,6 +79,7 @@ class MainController():
         self.length: int = self.res_man.length
         self.interaction: Interaction = None
         self.interaction_type: str = 'Click'
+        self.app_mode: str = 'annotation'
         self.curr_ti: int = 0
         self.curr_object: int = 1
         self.propagating: bool = False
@@ -136,6 +137,42 @@ class MainController():
         self.update_config()
         self.gui.update_object_label(self.object_labels.get(self.curr_object, ""))
 
+    def set_app_mode(self, mode: str):
+        if mode not in ['annotation', 'view']:
+            return
+        
+        self.app_mode = mode
+        self.gui.text(f"Modo alterado para: {mode}")
+        
+        # Se mudar para visualização, cancela interações pendentes
+        if mode == 'view':
+            self.reset_this_interaction()
+            
+        # Atualiza a UI
+        self.gui.toggle_mode_ui(mode)
+
+    def get_object_info_at(self, x: float, y: float) -> str:
+        """
+        Retorna uma string com ID e Label do objeto na coordenada x, y.
+        Retorna None se for fundo ou inválido.
+        """
+        if self.curr_mask is None:
+            return None
+
+        ix, iy = int(x), int(y)
+        
+        # Garante que está dentro dos limites da imagem
+        if 0 <= iy < self.h and 0 <= ix < self.w:
+            obj_id = self.curr_mask[iy, ix]
+            
+            if obj_id > 0:
+                # Busca o label no dicionário, se não existir usa "No Label"
+                label_text = self.object_labels.get(obj_id, "No Label")
+                # Formata conforme solicitado: ID: X | Class: Y
+                return f"ID: {obj_id} | Class: {label_text}"
+            
+        return None
+
     def load_labels(self):
         if path.exists(self.labels_file_path):
             try:
@@ -191,6 +228,11 @@ class MainController():
     def click_fn(self, action: Literal['left', 'right', 'middle', 'pick'], x: int, y: int):
         if self.propagating:
             return
+
+        if self.app_mode == 'view':
+            if action in ['left', 'right']:
+                self.gui.text("Edição bloqueada no Modo de Visualização.")
+                return
 
         if action == 'pick':
             target_object = self.curr_mask[int(y), int(x)]
