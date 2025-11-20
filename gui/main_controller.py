@@ -81,6 +81,7 @@ class MainController():
         self.interaction_type: str = 'Click'
         self.app_mode: str = 'annotation'
         self.selection_tool: str = 'click'
+        self.last_deleted_info: Dict = None
         self.curr_ti: int = 0
         self.curr_object: int = 1
         self.propagating: bool = False
@@ -174,7 +175,7 @@ class MainController():
         # Envia como um clique esquerdo (positivo)
         # Reutiliza a lógica existente de clique
         self.click_fn('left', center_x, center_y)
-        
+
     def get_object_info_at(self, x: float, y: float) -> str:
         """
         Retorna uma string com ID e Label do objeto na coordenada x, y.
@@ -662,39 +663,139 @@ class MainController():
         self.gui.process_events()
 
         try:
+            # 1. Preparar pasta de backup temporária
+            backup_root = path.join(self.cfg['workspace'], 'undo_cache')
+            os.makedirs(backup_root, exist_ok=True)
+            
+            # Limpa backup anterior (só suportamos 1 nível de undo para essa operação pesada por enquanto)
+            if self.last_deleted_info is not None:
+                shutil.rmtree(self.last_deleted_info['backup_dir'], ignore_errors=True)
+
+            current_backup_dir = path.join(backup_root, f'obj_{object_id}')
+            os.makedirs(current_backup_dir, exist_ok=True)
+            os.makedirs(path.join(current_backup_dir, 'masks'), exist_ok=True)
+
+            frames_affected = []
+
+            # 2. Backup e Remoção do Soft Mask (Pasta)
             soft_mask_dir_obj = path.join(self.res_man.soft_mask_dir, f'{object_id}')
-            if path.exists(soft_mask_dir_obj):
-                shutil.rmtree(soft_mask_dir_obj)
+            soft_mask_backup_dest = path.join(current_backup_dir, 'soft_masks')
+            
+            has_soft_mask = path.exists(soft_mask_dir_obj)
+            if has_soft_mask:
+                # Movemos em vez de deletar (muito mais rápido e serve como backup)
+                shutil.move(soft_mask_dir_obj, soft_mask_backup_dest)
+                # Recriamos a pasta vazia para não quebrar o resto do código
                 self.res_man.add_object_directory(object_id)
 
+            # 3. Backup e Modificação das Máscaras (Hard Masks)
             for ti in range(self.length):
                 mask = self.res_man.get_mask(ti)
                 if mask is not None:
                     if np.any(mask == object_id):
+                        # Salva cópia do original ANTES de alterar
+                        frames_affected.append(ti)
+                        mask_name = self.res_man.names[ti]
+                        original_mask_path = path.join(self.res_man.mask_dir, mask_name + '.png')
+                        backup_mask_path = path.join(current_backup_dir, 'masks', mask_name + '.png')
+                        shutil.copy2(original_mask_path, backup_mask_path)
+
+                        # Altera o atual (remove o objeto)
                         mask[mask == object_id] = 0
                         self.res_man.save_mask(ti, mask)
                 
-                if ti % 20 == 0 or ti == self.length - 1:
+                if ti % 20 == 0:
                     self.gui.progressbar_update((ti + 1) / self.length)
                     self.gui.process_events()
 
-            self.gui.progressbar_update(0)
-            self.gui.text(f"Successfully removed object {object_id} from all frames.")
+            # 4. Salvar Metadados do Undo
+            self.last_deleted_info = {
+                'id': object_id,
+                'label': self.object_labels.get(object_id, ""),
+                'backup_dir': current_backup_dir,
+                'has_soft_mask': has_soft_mask,
+                'frames_affected': frames_affected
+            }
 
+            # 5. Remoção de Label e Atualização UI
             if object_id in self.object_labels:
                 del self.object_labels[object_id]
                 self.save_labels()
                 if object_id == self.curr_object:
                     self.gui.update_object_label("")
 
+            self.gui.progressbar_update(0)
+            self.gui.text(f"Object {object_id} removed. Press Ctrl+Z to Undo.")
             self.load_current_image_mask()
             self.show_current_frame()
 
         except Exception as e:
-            self.gui.text(f"An error occurred during removal: {e}")
+            self.gui.text(f"Error removing object: {e}")
             log.error(f"Failed to remove object {object_id}: {e}")
             self.gui.progressbar_update(0)
     
+    def on_undo_delete(self):
+        if self.last_deleted_info is None:
+            self.gui.text("Nothing to undo.")
+            return
+
+        info = self.last_deleted_info
+        obj_id = info['id']
+        backup_dir = info['backup_dir']
+
+        self.gui.text(f"Undoing deletion of Object {obj_id}...")
+        self.gui.process_events()
+
+        try:
+            # 1. Restaurar Soft Masks
+            if info['has_soft_mask']:
+                # Remove a pasta vazia/nova que foi criada na deleção
+                current_soft_dir = path.join(self.res_man.soft_mask_dir, f'{obj_id}')
+                if path.exists(current_soft_dir):
+                    shutil.rmtree(current_soft_dir)
+                
+                # Move de volta a pasta de backup
+                backup_soft_dir = path.join(backup_dir, 'soft_masks')
+                shutil.move(backup_soft_dir, current_soft_dir)
+
+            # 2. Restaurar Hard Masks (apenas frames afetados)
+            for ti in info['frames_affected']:
+                mask_name = self.res_man.names[ti]
+                backup_mask_path = path.join(backup_dir, 'masks', mask_name + '.png')
+                target_mask_path = path.join(self.res_man.mask_dir, mask_name + '.png')
+                
+                if path.exists(backup_mask_path):
+                    shutil.copy2(backup_mask_path, target_mask_path)
+                    # Invalidar cache do ResourceManager para recarregar do disco
+                    self.res_man.invalidate(ti)
+
+            # 3. Restaurar Label
+            if info['label']:
+                self.object_labels[obj_id] = info['label']
+                self.save_labels()
+
+            # 4. Limpeza e UI
+            # Se restauramos o objeto que estamos vendo agora, atualiza
+            if self.curr_object == obj_id:
+                self.gui.update_object_label(info['label'])
+            
+            # Garante que o seletor de objetos vá até esse ID (caso fosse o último)
+            if obj_id > self.num_objects:
+                self.num_objects = obj_id
+                self.cfg['num_objects'] = self.num_objects
+                self.gui.object_dial.setMaximum(self.num_objects)
+
+            self.gui.text(f"Object {obj_id} restored successfully.")
+            self.last_deleted_info = None # Limpa o stack de undo (só 1 nível)
+            
+            # Atualiza frame atual
+            self.load_current_image_mask()
+            self.show_current_frame()
+
+        except Exception as e:
+            self.gui.text(f"Error performing undo: {e}")
+            log.error(f"Undo failed: {e}")
+
     def complete_interaction(self):
         if self.interaction is not None:
             self.interaction = None

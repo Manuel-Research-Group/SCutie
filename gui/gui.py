@@ -399,6 +399,10 @@ class GUI(QWidget):
         # commit to permanent memory shortcut
         QShortcut(QKeySequence(Qt.Key.Key_C), self).activated.connect(controller.on_commit)
 
+        # --- NOVO: Undo Shortcut ---
+        self.undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
+        self.undo_shortcut.activated.connect(controller.on_undo_delete)
+        
         # propagate forward/backward/pause shortcuts
         QShortcut(QKeySequence(Qt.Key.Key_F), self).activated.connect(controller.on_forward_propagation)
         QShortcut(QKeySequence(Qt.Key.Key_Space), self).activated.connect(controller.on_forward_propagation)
