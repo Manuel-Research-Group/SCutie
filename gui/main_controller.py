@@ -317,7 +317,6 @@ class MainController():
             else:
                 self.curr_mask = loaded_mask.copy()
                 
-                '''
                 max_id_in_mask = int(self.curr_mask.max())
                 if max_id_in_mask > self.num_objects:
                     self.gui.text(f"Mask has object {max_id_in_mask}. Updating object count from {self.num_objects}.")
@@ -328,7 +327,7 @@ class MainController():
                     self.cfg['num_objects'] = self.num_objects
                     self.gui.object_dial.setMaximum(self.num_objects)
                     self.gui.text(f"Object count set to {self.num_objects}.")
-                '''
+
             self.curr_prob = None
 
     def convert_current_image_mask_torch(self, no_mask: bool = False):
