@@ -6,9 +6,9 @@ from omegaconf import DictConfig
 
 from PySide6.QtWidgets import (QWidget, QComboBox, QCheckBox, QHBoxLayout, QLabel, QPushButton,
                                QTextEdit, QSpinBox, QPlainTextEdit, QVBoxLayout, QSizePolicy,
-                               QButtonGroup, QSlider, QRadioButton, QApplication, QFileDialog, QLineEdit)
-
-from PySide6.QtGui import (QKeySequence, QShortcut, QTextCursor, QImage, QPixmap, QIcon)
+                               QButtonGroup, QSlider, QRadioButton, QApplication, QFileDialog, 
+                               QLineEdit, QMenuBar, QMenu, QToolTip)
+from PySide6.QtGui import (QKeySequence, QShortcut, QTextCursor, QImage, QPixmap, QIcon, QAction, QActionGroup)
 from PySide6.QtCore import Qt, QTimer
 
 from cutie.utils.palette import davis_palette_np
@@ -34,6 +34,30 @@ class GUI(QWidget):
         self.setWindowTitle(f'Cutie demo: {cfg["workspace"]}')
         self.setGeometry(100, 100, self.w + 200, self.h + 200)
         self.setWindowIcon(QIcon('docs/icon.png'))
+
+        self.menu_bar = QMenuBar(self)
+        
+        # Menu de Modos
+        self.mode_menu = self.menu_bar.addMenu("Mode")
+        self.mode_action_group = QActionGroup(self)
+        self.mode_action_group.setExclusive(True)
+
+        # Ação: Anotação
+        self.act_annotation = QAction("Annotation", self)
+        self.act_annotation.setCheckable(True)
+        self.act_annotation.setChecked(True) # Padrão
+        self.act_annotation.setShortcut("Ctrl+1")
+        self.act_annotation.triggered.connect(lambda: controller.set_app_mode('annotation'))
+        self.mode_action_group.addAction(self.act_annotation)
+        self.mode_menu.addAction(self.act_annotation)
+
+        # Ação: Visualização
+        self.act_view = QAction("Visualization", self)
+        self.act_view.setCheckable(True)
+        self.act_view.setShortcut("Ctrl+2")
+        self.act_view.triggered.connect(lambda: controller.set_app_mode('view'))
+        self.mode_action_group.addAction(self.act_view)
+        self.mode_menu.addAction(self.act_view)
 
         # set up some buttons
         self.play_button = QPushButton('Play video')
@@ -310,6 +334,7 @@ class GUI(QWidget):
         draw_area.addLayout(right_area, 1)
 
         layout = QVBoxLayout()
+        layout.setMenuBar(self.menu_bar)
         layout.addLayout(draw_area)
         layout.addWidget(self.tl_slider)
         layout.addLayout(navi)
@@ -329,10 +354,7 @@ class GUI(QWidget):
 
         # Objects shortcuts
         for i in range(1, controller.num_objects + 1):
-            QShortcut(QKeySequence(str(i)),
-                      self).activated.connect(functools.partial(controller.hit_number_key, i))
-            QShortcut(QKeySequence(f"Ctrl+{i}"),
-                      self).activated.connect(functools.partial(controller.hit_number_key, i))
+            QShortcut(QKeySequence(str(i)), self).activated.connect(functools.partial(controller.hit_number_key, i))
 
         # next/prev frame shortcuts
         QShortcut(QKeySequence(Qt.Key.Key_Left), self).activated.connect(controller.on_prev_frame)
@@ -361,6 +383,38 @@ class GUI(QWidget):
         # quit shortcut
         QShortcut(QKeySequence(Qt.Key.Key_Q), self).activated.connect(self.close)
 
+
+    def toggle_mode_ui(self, mode: str):
+        """
+        Habilita ou desabilita widgets baseados no modo.
+        """
+        is_annotation = (mode == 'annotation')
+        
+        # Lista de widgets que permitem edição/escrita
+        widgets_to_toggle = [
+            self.commit_button,
+            self.forward_run_button,
+            self.backward_run_button,
+            self.reset_frame_button,
+            self.reset_object_button,
+            self.remove_object_button,
+            self.add_object_button,
+            self.import_mask_button,
+            self.clear_all_mem_button,
+            self.clear_non_perm_mem_button,
+            self.object_dial,
+            self.object_label_edit,
+            self.save_soft_mask_checkbox
+        ]
+
+        for widget in widgets_to_toggle:
+            widget.setEnabled(is_annotation)
+
+        # Atualiza o check do menu visualmente caso a mudança venha de outro lugar
+        if is_annotation:
+            self.act_annotation.setChecked(True)
+        else:
+            self.act_view.setChecked(True)
 
     def resizeEvent(self, event):
         self.controller.show_current_frame()
@@ -488,7 +542,19 @@ class GUI(QWidget):
 
     def on_mouse_motion(self, event):
         ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
-        self.on_mouse_motion_xy(ex, ey)
+        
+        # Se estiver em modo de visualização, mostra tooltip
+        if self.controller.app_mode == 'view':
+            info_text = self.controller.get_object_info_at(ex, ey)
+            if info_text:
+                # Mostra o tooltip perto do mouse, mas sem piscar demais
+                # O QToolTip padrão do Qt lida bem com chamadas repetidas se o texto for o mesmo
+                QToolTip.showText(event.globalPosition().toPoint(), info_text, self.main_canvas)
+            else:
+                QToolTip.hideText()
+        else:
+            # Comportamento original (arrastar cliques, etc)
+            self.on_mouse_motion_xy(ex, ey)
 
     def on_mouse_release(self, event):
         pass
