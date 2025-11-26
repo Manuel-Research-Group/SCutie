@@ -236,7 +236,7 @@ class MainController():
                 frame_idx=self.curr_ti, 
                 obj_id=curr_id
             )
-            
+        
             if mask_tensor is not None:
                 
                 if self.curr_prob is None:
@@ -378,6 +378,10 @@ class MainController():
     def hit_number_key(self, number: int):
         if number == self.curr_object:
             return
+
+        if hasattr(self.click_ctrl, 'reset_context'):
+            self.click_ctrl.reset_context()
+
         self.curr_object = number
         self.gui.object_dial.setValue(number)
         if self.click_ctrl is not None:
@@ -734,6 +738,10 @@ class MainController():
 
     def on_add_object(self):
         self.reset_this_interaction() # Clear pending clicks
+
+        if hasattr(self.click_ctrl, 'reset_context'):
+            self.click_ctrl.reset_context()
+            
         self.num_objects += 1
         self.cfg['num_objects'] = self.num_objects # Update config
         self.gui.object_dial.setMaximum(self.num_objects) # Update UI
