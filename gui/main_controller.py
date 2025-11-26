@@ -28,6 +28,8 @@ from gui.click_controller import ClickController
 #from gui.sam2_click_controller import SAM2ClickController
 from gui.reader import PropagationReader, get_data_loader
 from gui.exporter import convert_frames_to_video, convert_mask_to_binary
+from gui.remote_sam_controller import RemoteSAMController
+
 from cutie.utils.download_models import download_models_if_needed
 
 import shutil
@@ -129,6 +131,11 @@ class MainController():
         self.gui.on_mouse_motion_xy = self.on_mouse_motion_xy
         self.gui.click_fn = self.click_fn
 
+        self.show_yolo_suggestions = True
+        self.yolo_data = {} # Dict[int, List[Dict]] -> {frame_idx: [detections]}
+
+        self.active_model_name = 'RITM'
+
         self.gui.showMaximized()
         self.gui.text('Initialized.')
         self.initialized = True
@@ -139,6 +146,118 @@ class MainController():
         self.update_config()
         self.gui.update_object_label(self.object_labels.get(self.curr_object, ""))
 
+    def on_load_yolo_json(self):
+        file_name = self.gui.open_file('YOLO JSON') # Pode precisar adaptar open_file para aceitar JSON ou usar QFileDialog direto
+        if not file_name or not file_name.endswith('.json'):
+            return
+            
+        try:
+            with open(file_name, 'r') as f:
+                raw_data = json.load(f)
+            
+            self.yolo_data = {}
+            loaded_count = 0
+            
+            # Mapear nomes de arquivos para índices
+            name_to_idx = {name: i for i, name in enumerate(self.res_man.names)}
+            
+            for key, detections in raw_data.items():
+                # O JSON chave pode ser "00000.jpg" ou "00000"
+                clean_key = key.replace('.jpg', '').replace('.png', '')
+                
+                if clean_key in name_to_idx:
+                    idx = name_to_idx[clean_key]
+                    self.yolo_data[idx] = detections
+                    loaded_count += len(detections)
+            
+            self.gui.text(f"Carregadas {loaded_count} detecções em {len(self.yolo_data)} frames.")
+            self.show_current_frame() # Repaint
+            
+        except Exception as e:
+            self.gui.text(f"Erro ao carregar JSON: {e}")
+
+    def on_toggle_yolo(self, checked):
+        self.show_yolo_suggestions = checked
+        self.show_current_frame()
+
+    def get_current_yolo_candidates(self):
+        return self.yolo_data.get(self.curr_ti, [])
+
+    def get_box_index_at(self, x, y):
+        """ Retorna o índice da caixa YOLO sob o mouse, ou -1 """
+        candidates = self.get_current_yolo_candidates()
+        # Itera de trás pra frente (caso haja sobreposição, pega a mais "recente/topo")
+        for i in range(len(candidates) - 1, -1, -1):
+            box = candidates[i]
+            x1, y1, x2, y2 = box['bbox_xyxy']
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                return i
+        return -1
+
+    def get_yolo_box_rect(self, idx):
+        candidates = self.get_current_yolo_candidates()
+        if 0 <= idx < len(candidates):
+            return candidates[idx]['bbox_xyxy']
+        return None
+
+    def remove_yolo_candidate(self, idx):
+        if self.curr_ti in self.yolo_data:
+             if 0 <= idx < len(self.yolo_data[self.curr_ti]):
+                 self.yolo_data[self.curr_ti].pop(idx)
+                 self.gui.main_canvas.update()
+
+    def accept_yolo_candidate(self, idx):
+        candidates = self.get_current_yolo_candidates()
+        if idx < 0 or idx >= len(candidates):
+            return
+            
+        box = candidates[idx]
+        x1, y1, x2, y2 = box['bbox_xyxy']
+        class_name = box.get('class_name', 'Unknown')
+        
+        # 1. Cria novo objeto e configura label
+        self.on_add_object() 
+        curr_id = self.curr_object
+        self.object_labels[curr_id] = class_name
+        self.gui.update_object_label(class_name)
+        self.save_labels()
+        
+        # 2. Gera a Máscara
+        if self.active_model_name == 'SAM2':
+            self.gui.text(f"Enviando BBox para SAM 2 API...")
+            self.gui.process_events()
+            
+            image_np = self.curr_image_np 
+            bbox = [x1, y1, x2, y2]
+            
+            mask_tensor = self.sam2_ctrl.predict_bbox(
+                image_np, 
+                bbox, 
+                frame_idx=self.curr_ti, 
+                obj_id=curr_id
+            )
+            
+            if mask_tensor is not None:
+                
+                if self.curr_prob is None:
+                    self.convert_current_image_mask_torch()
+                
+                prob_map = self.curr_prob.clone()
+                
+                prob_map[curr_id] = mask_tensor
+
+                self.interacted_prob = aggregate_wbg(prob_map[1:], keep_bg=True, hard=True)
+                
+                self.update_interacted_mask()
+                self.gui.text(f"Máscara SAM 2 recebida para objeto {curr_id}.")
+            else:
+                self.gui.text("Erro ao obter máscara do SAM 2.")
+                
+        else:
+            self.on_bbox_complete(x1, y1, x2, y2)
+        
+        self.remove_yolo_candidate(idx)
+        
     def set_app_mode(self, mode: str):
         if mode not in ['annotation', 'view']:
             return
@@ -221,10 +340,17 @@ class MainController():
         download_models_if_needed()
         self.cutie = CUTIE(self.cfg).eval().to(self.device)
         # Update num_objects in cfg before loading weights if it changed
-        model_weights = torch.load(self.cfg.weights, map_location=self.device)
+        model_weights = torch.load(self.cfg.weights, map_location=self.device, weights_only=True)
         self.cutie.load_weights(model_weights)
 
         self.click_ctrl = ClickController(self.cfg.ritm_weights, device=self.device)
+        self.sam2_ctrl = RemoteSAMController(api_url="http://localhost:7263", device=self.device)
+
+        self.ritm_ctrl = ClickController(self.cfg.ritm_weights, device=self.device)
+        self.sam2_ctrl = RemoteSAMController(api_url="http://localhost:7263", device=self.device)
+        self.click_ctrl = self.ritm_ctrl
+
+
         ''' 
         #self.click_ctrl = ClickController(self.cfg.ritm_weights, device=self.device)
         if not hasattr(self.cfg, 'sam2_weights') or not hasattr(self.cfg, 'sam2_config'):
@@ -237,6 +363,17 @@ class MainController():
             device=self.device
         )
         '''
+
+    def set_segmentation_model(self, model_name: str):
+        """Alterna entre os modelos"""
+        if model_name == 'RITM':
+            self.click_ctrl = self.ritm_ctrl
+            self.active_model_name = 'RITM'
+            self.gui.text("Modelo alterado para: RITM (Local)")
+        elif model_name == 'SAM2':
+            self.click_ctrl = self.sam2_ctrl
+            self.active_model_name = 'SAM2'
+            self.gui.text("Modelo alterado para: SAM 2 (API Remota)")
 
     def hit_number_key(self, number: int):
         if number == self.curr_object:
@@ -458,14 +595,28 @@ class MainController():
 
             self.gui.text(f'Propagation started at t={self.curr_ti}.')
             self.processor.clear_sensory_memory()
-            self.curr_prob = self.processor.step(self.curr_image_torch,
-                                                 self.curr_prob[1:],
-                                                 idx_mask=False)
+
+            # --- PASSO 1: LIMPEZA DE "FANTASMAS" (MANTIDO) ---
+            # Isso é vital! Remove qualquer ruído (ex: 0.001) do Objeto 1 se ele estiver vazio.
+            # Se não fizermos isso, o processor tentará buscar a memória do Obj 1 e dará KeyError.
             self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
-            # clear
+            self.curr_prob = index_numpy_to_one_hot_torch(self.curr_mask, self.num_objects + 1).to(
+                self.device, non_blocking=True)
+            # -------------------------------------------------
+
+            # --- PASSO 2: PROPAGAÇÃO INICIAL (CORRIGIDO) ---
+            # Voltamos a usar self.curr_prob[1:]. 
+            # Como limpamos os fantasmas acima, o canal do Objeto 1 será totalmente 0.0.
+            # O processador verá zeros, ignorará o Objeto 1 e NÃO dará KeyError, nem tela vermelha.
+            self.curr_prob = self.processor.step(self.curr_image_torch,
+                                                 self.curr_prob[1:], # <--- VOLTAMOS PARA [1:]
+                                                 idx_mask=False)
+            
+            self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
+            
+            # Limpa estado de interação e atualiza visualização
             self.interacted_prob = None
             self.reset_this_interaction()
-            # override this for #41
             self.show_current_frame(fast=True, invalid_soft_mask=True)
 
             self.propagating = True
@@ -507,18 +658,23 @@ class MainController():
 
     def on_commit(self):
         if self.interacted_prob is None:
-            # get mask from disk
             self.load_current_image_mask()
         else:
-            # get mask from interaction
             self.complete_interaction()
             self.update_interacted_mask()
 
         with autocast(self.device, enabled=(self.amp and self.device == 'cuda')):
             self.convert_current_image_mask_torch()
+            
+            # Limpeza rápida antes de salvar memória permanente para evitar lixo
+            self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
+            self.curr_prob = index_numpy_to_one_hot_torch(self.curr_mask, self.num_objects + 1).to(
+                self.device, non_blocking=True)
+
             self.gui.text(f'Permanent memory saved at {self.curr_ti}.')
+            
             self.curr_prob = self.processor.step(self.curr_image_torch,
-                                                 self.curr_prob[1:],
+                                                 self.curr_prob[1:], # <--- [1:] AQUI TAMBÉM
                                                  idx_mask=False,
                                                  force_permanent=True)
             self.update_memory_gauges()

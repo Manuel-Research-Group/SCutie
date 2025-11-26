@@ -10,10 +10,65 @@ from PySide6.QtWidgets import (QWidget, QComboBox, QCheckBox, QHBoxLayout, QLabe
                                QLineEdit, QMenuBar, QMenu, QToolTip, QRubberBand)
 from PySide6.QtGui import (QKeySequence, QShortcut, QTextCursor, QImage, QPixmap, QIcon, QAction, QActionGroup)
 from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QSize
+from PySide6.QtGui import QPainter, QPen, QColor
 
 from cutie.utils.palette import davis_palette_np
 from gui.gui_utils import *
 
+class OverlayCanvas(QLabel):
+    def __init__(self, controller):
+        super().__init__()
+        self.controller = controller
+        # Cores para as sugestões (Amarelo vibrante por padrão)
+        self.pen_candidate = QPen(QColor(255, 255, 0), 2, Qt.PenStyle.DashLine)
+        self.pen_hover = QPen(QColor(0, 255, 0), 2, Qt.PenStyle.SolidLine)
+        self.hovered_box_idx = -1
+
+    def paintEvent(self, event):
+        # 1. Desenha a imagem (Pixmap) original
+        super().paintEvent(event)
+
+        # 2. Desenha as caixas do YOLO se houverem
+        if not self.controller.show_yolo_suggestions:
+            return
+
+        candidates = self.controller.get_current_yolo_candidates()
+        if not candidates:
+            return
+
+        painter = QPainter(self)
+        
+        for i, box in enumerate(candidates):
+            x1, y1, x2, y2 = box['bbox_xyxy']
+            
+            # Converter coordenadas da imagem real para coordenadas da tela (zoom/scale)
+            sx1, sy1 = self.controller.gui.image_pos_to_pixel_pos(x1, y1)
+            sx2, sy2 = self.controller.gui.image_pos_to_pixel_pos(x2, y2)
+            
+            w = sx2 - sx1
+            h = sy2 - sy1
+            
+            if i == self.hovered_box_idx:
+                painter.setPen(self.pen_hover)
+            else:
+                painter.setPen(self.pen_candidate)
+                
+            painter.drawRect(int(sx1), int(sy1), int(w), int(h))
+            
+            # Opcional: Desenhar o nome da classe
+            painter.drawText(int(sx1), int(sy1) - 5, f"{box['class_name']} ({box['confidence']:.2f})")
+            
+        painter.end()
+
+    def mouseMoveEvent(self, event):
+        # Detectar hover para destacar a caixa
+        if self.controller.show_yolo_suggestions:
+            mx, my = self.controller.gui.pixel_pos_to_image_pos(event.position().x(), event.position().y())
+            self.hovered_box_idx = self.controller.get_box_index_at(mx, my)
+            self.update() # Força repaint
+        
+        # Passa o evento para o pai (GUI) para lidar com a lógica normal
+        super().mouseMoveEvent(event)
 
 class GUI(QWidget):
 
@@ -80,6 +135,19 @@ class GUI(QWidget):
         self.selection_action_group.addAction(self.act_sel_bbox)
         self.selection_menu.addAction(self.act_sel_bbox)
 
+        # Menu YOLO
+        self.menu_yolo = self.menu_bar.addMenu("YOLO")
+        
+        self.act_load_yolo = QAction("Load YOLO JSON...", self)
+        self.act_load_yolo.triggered.connect(controller.on_load_yolo_json)
+        self.menu_yolo.addAction(self.act_load_yolo)
+        
+        self.act_toggle_yolo = QAction("Show Suggestions", self)
+        self.act_toggle_yolo.setCheckable(True)
+        self.act_toggle_yolo.setChecked(True)
+        self.act_toggle_yolo.toggled.connect(controller.on_toggle_yolo)
+        self.menu_yolo.addAction(self.act_toggle_yolo)
+
         # set up some buttons
         self.play_button = QPushButton('Play video')
         self.play_button.clicked.connect(self.on_play_video)
@@ -98,12 +166,31 @@ class GUI(QWidget):
         self.backward_run_button.clicked.connect(controller.on_backward_propagation)
         self.backward_run_button.setMinimumWidth(150)
 
+        self.menu_model = self.menu_bar.addMenu("Model AI")
+        self.model_action_group = QActionGroup(self)
+        self.model_action_group.setExclusive(True)
+
         # universal progressbar
         self.progressbar = QProgressBar()
         self.progressbar.setMinimum(0)
         self.progressbar.setMaximum(100)
         self.progressbar.setValue(0)
         self.progressbar.setMinimumWidth(200)
+
+        # Opção RITM
+        self.act_ritm = QAction("RITM (Local - Rápido)", self)
+        self.act_ritm.setCheckable(True)
+        self.act_ritm.setChecked(True)
+        self.act_ritm.triggered.connect(lambda: controller.set_segmentation_model('RITM'))
+        self.model_action_group.addAction(self.act_ritm)
+        self.menu_model.addAction(self.act_ritm)
+
+        # Opção SAM 2
+        self.act_sam2 = QAction("SAM 2 (API - Preciso)", self)
+        self.act_sam2.setCheckable(True)
+        self.act_sam2.triggered.connect(lambda: controller.set_segmentation_model('SAM2'))
+        self.model_action_group.addAction(self.act_sam2)
+        self.menu_model.addAction(self.act_sam2)
 
         self.reset_frame_button = QPushButton('Reset frame')
         self.reset_frame_button.clicked.connect(controller.on_reset_mask)
@@ -195,7 +282,8 @@ class GUI(QWidget):
         self.bitrate_dial.editingFinished.connect(controller.on_bitrate_dial_change)
 
         # Main canvas -> QLabel
-        self.main_canvas = QLabel()
+        #self.main_canvas = QLabel()
+        self.main_canvas = OverlayCanvas(controller)
         self.main_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.main_canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.main_canvas.setMinimumSize(100, 100)
@@ -444,6 +532,26 @@ class GUI(QWidget):
         else:
             self.act_view.setChecked(True)
 
+    def image_pos_to_pixel_pos(self, x, y):
+        # Convert image coordinates back to screen coordinates for drawing
+        oh, ow = self.image_size.height(), self.image_size.width()
+        nh, nw = self.main_canvas_size.height(), self.main_canvas_size.width()
+
+        h_ratio = nh / oh
+        w_ratio = nw / ow
+        dominate_ratio = min(h_ratio, w_ratio)
+
+        # Padding
+        fh, fw = nh / dominate_ratio, nw / dominate_ratio
+        x += (fw - ow) / 2
+        y += (fh - oh) / 2
+        
+        # Scale
+        x *= dominate_ratio
+        y *= dominate_ratio
+        
+        return x, y
+
     def resizeEvent(self, event):
         self.controller.show_current_frame()
 
@@ -544,51 +652,107 @@ class GUI(QWidget):
         QApplication.processEvents()
 
     def on_mouse_press(self, event):
-        # 1. Verifica se o clique foi fora da imagem
+        # -------------------------------------------------------------------------
+        # 1. DEBUG E VERIFICAÇÕES INICIAIS
+        # -------------------------------------------------------------------------
+        btn_name = "Esquerdo" if event.button() == Qt.MouseButton.LeftButton else "Direito" if event.button() == Qt.MouseButton.RightButton else "Outro"
+        self.text(f"--- DEBUG: Clique {btn_name} detectado em ({event.position().x():.1f}, {event.position().y():.1f}) ---")
+
         if self.is_pos_out_of_bound(event.position().x(), event.position().y()):
+            self.text("DEBUG: Clique ignorado (Fora dos limites da imagem).")
             return
 
-        # 2. Lógica da Bounding Box (NOVO)
-        # Só ativa se: ferramenta for 'bbox', modo for 'annotation' e for botão esquerdo
+        # -------------------------------------------------------------------------
+        # 2. CÁLCULO DE COORDENADAS (Unificado)
+        # -------------------------------------------------------------------------
+        # Calculamos aqui para usar em todos os blocos abaixo
+        ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
+        self.text(f"DEBUG: Posição escalada na imagem: x={ex:.1f}, y={ey:.1f}")
+
+        modifiers = QApplication.keyboardModifiers()
+
+        # -------------------------------------------------------------------------
+        # 3. LÓGICA YOLO (Prioridade Alta - Overlay)
+        # -------------------------------------------------------------------------
+        # Verifica se clicou numa sugestão amarela
+        if self.controller.show_yolo_suggestions:
+             box_idx = self.controller.get_box_index_at(ex, ey)
+             
+             if box_idx != -1:
+                 self.text(f"DEBUG: Clique INTERCEPTADO por caixa YOLO (Index: {box_idx})")
+                 
+                 # Clique Direito: Modo de Edição (Mover/Esticar)
+                 if event.button() == Qt.MouseButton.RightButton:
+                     self.text("DEBUG: Ação YOLO: Editar (Transformar em RubberBand)")
+                     rect = self.controller.get_yolo_box_rect(box_idx)
+                     
+                     # Converter coords da imagem -> tela para desenhar o rubberband visualmente
+                     x1, y1 = self.image_pos_to_pixel_pos(rect[0], rect[1])
+                     x2, y2 = self.image_pos_to_pixel_pos(rect[2], rect[3])
+                     
+                     self.origin_mouse_pos = QPoint(int(x1), int(y1))
+                     self.rubber_band.setGeometry(QRect(QPoint(int(x1), int(y1)), QPoint(int(x2), int(y2))).normalized())
+                     self.rubber_band.show()
+                     
+                     # Troca para ferramenta bbox para permitir o "release" do mouse terminar o desenho
+                     self.controller.selection_tool = 'bbox' 
+                     self.controller.remove_yolo_candidate(box_idx)
+                     return # Encerra aqui
+
+                 # Clique Esquerdo: Aceitar
+                 elif event.button() == Qt.MouseButton.LeftButton:
+                     self.text("DEBUG: Ação YOLO: Aceitar candidato")
+                     self.controller.accept_yolo_candidate(box_idx)
+                     return # Encerra aqui
+
+        # -------------------------------------------------------------------------
+        # 4. LÓGICA BBOX MANUAL (Ferramenta Selecionada)
+        # -------------------------------------------------------------------------
+        # Só entra aqui se NÃO clicou numa caixa YOLO (devido aos returns acima)
+        # E se não estiver segurando CTRL (pois CTRL força o modo 'Pick')
         if (self.controller.selection_tool == 'bbox' and 
             self.controller.app_mode == 'annotation' and 
-            event.button() == Qt.MouseButton.LeftButton):
+            event.button() == Qt.MouseButton.LeftButton and
+            modifiers != Qt.KeyboardModifier.ControlModifier):
             
-            # Verifica se não tem modificadores (ex: Ctrl pressionado é 'pick', então ignoramos a bbox)
-            modifiers = QApplication.keyboardModifiers()
-            if modifiers != Qt.KeyboardModifier.ControlModifier:
-                self.origin_mouse_pos = event.position().toPoint()
-                self.rubber_band.setGeometry(QRect(self.origin_mouse_pos, QSize()))
-                self.rubber_band.show()
-                return  # Retorna aqui para não processar como um clique de ponto
+            self.text("DEBUG: Iniciando BBox Manual (RubberBand)")
+            self.origin_mouse_pos = event.position().toPoint()
+            self.rubber_band.setGeometry(QRect(self.origin_mouse_pos, QSize()))
+            self.rubber_band.show()
+            return # Encerra aqui para não gerar clique pontual
 
-        # 3. Lógica Padrão de Cliques (EXISTENTE)
-        ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
-
+        # -------------------------------------------------------------------------
+        # 5. LÓGICA PADRÃO (Clique Pontual / Pick / Interação)
+        # -------------------------------------------------------------------------
         action = None
-        modifiers = QApplication.keyboardModifiers()
 
         # Ctrl + Clique Esquerdo = Pick (Selecionar objeto clicado)
         if (modifiers == Qt.KeyboardModifier.ControlModifier and 
             event.button() == Qt.MouseButton.LeftButton):
             action = 'pick'
+            self.text("DEBUG: Ação definida: PICK")
         
         # Botão Esquerdo = Clique Positivo (Add)
         elif event.button() == Qt.MouseButton.LeftButton:
             action = 'left'
+            self.text("DEBUG: Ação definida: LEFT (Add)")
         
         # Botão Direito = Clique Negativo (Remove)
         elif event.button() == Qt.MouseButton.RightButton:
             action = 'right'
+            self.text("DEBUG: Ação definida: RIGHT (Remove)")
         
         # Botão do Meio = Trocar visualização overlay
         elif event.button() == Qt.MouseButton.MiddleButton:
             action = 'middle'
+            self.text("DEBUG: Ação definida: MIDDLE (Vis)")
 
         if action is None:
+            self.text("DEBUG: Nenhuma ação mapeada, ignorando.")
             return
         
-        # Chama a função de clique do controller (usando o callback definido)
+        # Executa a ação final
+        self.text(f"DEBUG: Enviando clique para controller (Ação: {action})")
         self.click_fn(action, ex, ey)
 
     def on_mouse_motion(self, event):
