@@ -151,8 +151,14 @@ class GUI(QWidget):
         # set up some buttons
         self.play_button = QPushButton('Play video')
         self.play_button.clicked.connect(self.on_play_video)
+        
         self.commit_button = QPushButton('Commit to permanent memory')
         self.commit_button.clicked.connect(controller.on_commit)
+
+        self.init_frame_button = QPushButton('Auto-Init Frame (YOLO)')
+        self.init_frame_button.clicked.connect(controller.on_init_frame_from_yolo)
+        self.init_frame_button.setToolTip("Gera máscaras automaticamente para todas as detecções YOLO neste frame")
+
         self.export_video_button = QPushButton('Export as video')
         self.export_video_button.clicked.connect(controller.on_export_visualization)
         self.export_binary_button = QPushButton('Export binary masks')
@@ -403,6 +409,7 @@ class GUI(QWidget):
         control_topbox = QHBoxLayout()
         control_botbox = QHBoxLayout()
         control_topbox.addWidget(self.commit_button)
+        control_topbox.addWidget(self.init_frame_button)
         control_topbox.addWidget(self.forward_run_button)
         control_topbox.addWidget(self.backward_run_button)
         control_botbox.addWidget(self.progressbar)
@@ -509,6 +516,7 @@ class GUI(QWidget):
         # Lista de widgets que permitem edição/escrita
         widgets_to_toggle = [
             self.commit_button,
+            self.init_frame_button,
             self.forward_run_button,
             self.backward_run_button,
             self.reset_frame_button,
