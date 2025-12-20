@@ -237,6 +237,11 @@ class GUI(QWidget):
         self.frame_name.setMinimumSize(100, 30)
         self.frame_name.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
+        self.object_size_edit = QLineEdit()
+        self.object_size_edit.setPlaceholderText("Size (DN)...")
+        self.object_size_edit.setMaximumWidth(100) 
+        self.object_size_edit.editingFinished.connect(controller.on_size_changed)
+
         # timeline slider
         self.tl_slider = QSlider(Qt.Orientation.Horizontal)
         self.tl_slider.valueChanged.connect(controller.on_slider_update)
@@ -369,6 +374,7 @@ class GUI(QWidget):
         interact_botbox.addWidget(self.object_color)
         interact_botbox.addWidget(self.frame_name)
         interact_botbox.addWidget(self.object_label_edit)
+        interact_botbox.addWidget(self.object_size_edit)
         interact_subbox.addLayout(interact_topbox)
         interact_subbox.addLayout(interact_botbox)
         interact_botbox.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -528,6 +534,7 @@ class GUI(QWidget):
             self.clear_non_perm_mem_button,
             self.object_dial,
             self.object_label_edit,
+            self.object_size_edit,
             self.save_soft_mask_checkbox
         ]
 
@@ -572,6 +579,11 @@ class GUI(QWidget):
         self.object_label_edit.blockSignals(True)
         self.object_label_edit.setText(label_text)
         self.object_label_edit.blockSignals(False)
+
+    def update_object_size(self, size_text: str):
+        self.object_size_edit.blockSignals(True)
+        self.object_size_edit.setText(size_text)
+        self.object_size_edit.blockSignals(False)
 
     def set_canvas(self, image):
         height, width, channel = image.shape

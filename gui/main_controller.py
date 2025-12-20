@@ -65,6 +65,12 @@ class MainController():
         self.object_labels: Dict[int, str] = {}
         self.labels_file_path = path.join(self.cfg['workspace'], 'object_labels.json')
         self.load_labels()
+
+        self.object_sizes: Dict[int, str] = {}
+        self.sizes_file_path = path.join(self.cfg['workspace'], 'sizes.json')
+        self.load_sizes()
+
+
         # Update num_objects from loaded labels if higher
         cfg['num_objects'] = max(cfg['num_objects'], max(self.object_labels.keys()) if self.object_labels else 0)
         self.initialize_networks()
@@ -431,10 +437,49 @@ class MainController():
             if obj_id > 0:
                 # Busca o label no dicionário, se não existir usa "No Label"
                 label_text = self.object_labels.get(obj_id, "No Label")
-                # Formata conforme solicitado: ID: X | Class: Y
-                return f"ID: {obj_id} | Class: {label_text}"
+                size_text = self.object_sizes.get(obj_id, "")
+                if size_text:
+                    return f"ID: {obj_id} | Class: {label_text} | Size: {size_text}"
+                else:
+                    return f"ID: {obj_id} | Class: {label_text}"
+                
             
         return None
+
+    def load_sizes(self):
+        if path.exists(self.sizes_file_path):
+            try:
+                with open(self.sizes_file_path, 'r') as f:
+                    loaded_data = json.load(f)
+                    # JSON keys são strings, converte para int
+                    self.object_sizes = {int(k): v for k, v in loaded_data.items()}
+                log.info(f"Loaded {len(self.object_sizes)} object sizes from {self.sizes_file_path}")
+            except Exception as e:
+                log.error(f"Failed to load sizes: {e}")
+
+    def save_sizes(self):
+        try:
+            with open(self.sizes_file_path, 'w') as f:
+                json.dump(self.object_sizes, f, indent=4)
+        except Exception as e:
+            self.gui.text(f"Error saving sizes: {e}")
+
+    def on_size_changed(self):
+        new_size = self.gui.object_size_edit.text().strip()
+        
+        # --- LÓGICA DE FORMATAÇÃO AUTOMÁTICA (250 => DN250) ---
+        if new_size.isdigit():
+            new_size = f"DN{new_size}"
+            # Atualiza a GUI para mostrar o prefixo adicionado
+            self.gui.update_object_size(new_size)
+        
+        if not new_size:
+            if self.curr_object in self.object_sizes:
+                del self.object_sizes[self.curr_object]
+        else:
+            self.object_sizes[self.curr_object] = new_size
+            
+        self.save_sizes()
 
     def load_labels(self):
         if path.exists(self.labels_file_path):
@@ -509,6 +554,7 @@ class MainController():
         self.gui.set_object_color(number)
         self.show_current_frame()
         self.gui.update_object_label(self.object_labels.get(self.curr_object, ""))
+        self.gui.update_object_size(self.object_sizes.get(self.curr_object, ""))
 
     def click_fn(self, action: Literal['left', 'right', 'middle', 'pick'], x: int, y: int):
         if self.propagating:
@@ -645,23 +691,32 @@ class MainController():
         self.res_man.save_mask(self.curr_ti, self.curr_mask)
 
     def on_slider_update(self):
-        # if we are propagating, the on_run function will take care of everything
-        # don't do duplicate work here
-        self.curr_ti = self.gui.tl_slider.value()
+        # 1. Captura para onde o slider foi movido
+        target_ti = self.gui.tl_slider.value()
+
         if not self.propagating:
-            # with self.vis_cond:
-            #     self.vis_cond.notify()
+            # --- MODO EDIÇÃO / PLAYBACK ---
+            
+            # A. SALVAR O PASSADO: 
+            # Verifica se o frame ANTIGO (self.curr_ti atual) precisa ser salvo.
+            # Como ainda não atualizamos self.curr_ti, isso salva no arquivo correto (o anterior).
             if self.curr_frame_dirty:
                 self.save_current_mask()
+            
             self.curr_frame_dirty = False
 
             if hasattr(self.click_ctrl, 'reset_context'):
                 self.click_ctrl.reset_context()
 
             self.reset_this_interaction()
-            self.curr_ti = self.gui.tl_slider.value()
+            
+            self.curr_ti = target_ti
+            
             self.load_current_image_mask()
             self.show_current_frame()
+
+        else:
+            self.curr_ti = target_ti
 
     def on_jump_to_frame(self):
         if self.propagating:
@@ -836,8 +891,8 @@ class MainController():
                 yolo_candidates = self.yolo_data.get(self.curr_ti, [])
                 stop_propagation = False
                 if yolo_candidates:
-                    high_conf_candidates = [c for c in yolo_candidates if c['confidence'] > 0.7]
-                    print(f"DEBUG: {len(high_conf_candidates)} candidatos YOLO com confiança > 0.7")
+                    high_conf_candidates = [c for c in yolo_candidates if c['confidence'] > 0.8]
+                    print(f"DEBUG: {len(high_conf_candidates)} candidatos YOLO com confiança > 0.8")
                     
                     for det in high_conf_candidates:
                         bbox = det['bbox_xyxy']
@@ -1161,6 +1216,7 @@ class MainController():
             self.last_deleted_info = {
                 'id': object_id,
                 'label': self.object_labels.get(object_id, ""),
+                'size': self.object_sizes.get(object_id, ""),
                 'backup_dir': current_backup_dir,
                 'has_soft_mask': has_soft_mask,
                 'frames_affected': frames_affected
@@ -1172,6 +1228,10 @@ class MainController():
                 self.save_labels()
                 if object_id == self.curr_object:
                     self.gui.update_object_label("")
+
+            if object_id in self.object_sizes:
+                del self.object_sizes[object_id]
+                self.save_sizes()
 
             self.gui.progressbar_update(0)
             self.gui.text(f"Object {object_id} removed. Press Ctrl+Z to Undo.")
@@ -1223,10 +1283,15 @@ class MainController():
                 self.object_labels[obj_id] = info['label']
                 self.save_labels()
 
+            if info.get('size'): # .get() para compatibilidade caso info antigo não tenha size
+                self.object_sizes[obj_id] = info['size']
+                self.save_sizes()
+
             # 4. Limpeza e UI
             # Se restauramos o objeto que estamos vendo agora, atualiza
             if self.curr_object == obj_id:
                 self.gui.update_object_label(info['label'])
+                self.gui.update_object_size(info.get('size', ""))
             
             # Garante que o seletor de objetos vá até esse ID (caso fosse o último)
             if obj_id > self.num_objects:
