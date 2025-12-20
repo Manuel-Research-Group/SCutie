@@ -66,6 +66,10 @@ class MainController():
         self.labels_file_path = path.join(self.cfg['workspace'], 'object_labels.json')
         self.load_labels()
 
+        self.object_models: Dict[int, str] = {}
+        self.models_file_path = path.join(self.cfg['workspace'], 'models.json')
+        self.load_models()
+
         self.object_sizes: Dict[int, str] = {}
         self.sizes_file_path = path.join(self.cfg['workspace'], 'sizes.json')
         self.load_sizes()
@@ -151,6 +155,8 @@ class MainController():
         self.gui.set_object_color(self.curr_object)
         self.update_config()
         self.gui.update_object_label(self.object_labels.get(self.curr_object, ""))
+        self.gui.update_object_model(self.object_models.get(self.curr_object, ""))
+        self.gui.update_object_size(self.object_sizes.get(self.curr_object, ""))
 
     def on_load_yolo_json(self):
         file_name = self.gui.open_file('YOLO JSON') # Pode precisar adaptar open_file para aceitar JSON ou usar QFileDialog direto
@@ -435,15 +441,17 @@ class MainController():
             obj_id = self.curr_mask[iy, ix]
             
             if obj_id > 0:
-                # Busca o label no dicionário, se não existir usa "No Label"
-                label_text = self.object_labels.get(obj_id, "No Label")
-                size_text = self.object_sizes.get(obj_id, "")
-                if size_text:
-                    return f"ID: {obj_id} | Class: {label_text} | Size: {size_text}"
-                else:
-                    return f"ID: {obj_id} | Class: {label_text}"
+                lbl = self.object_labels.get(obj_id, "No Label")
+                mod = self.object_models.get(obj_id, "")
+                siz = self.object_sizes.get(obj_id, "")
                 
-            
+                # Creates a string in the following pattern (ID: 1 | Butterfly Valve | VPI 54059 | DN200)
+                info = f"ID: {obj_id} | {lbl}"
+                if mod: info += f" | {mod}"
+                if siz: info += f" | {siz}"
+                
+                return info
+                
         return None
 
     def load_sizes(self):
@@ -451,7 +459,6 @@ class MainController():
             try:
                 with open(self.sizes_file_path, 'r') as f:
                     loaded_data = json.load(f)
-                    # JSON keys são strings, converte para int
                     self.object_sizes = {int(k): v for k, v in loaded_data.items()}
                 log.info(f"Loaded {len(self.object_sizes)} object sizes from {self.sizes_file_path}")
             except Exception as e:
@@ -467,17 +474,17 @@ class MainController():
     def on_size_changed(self):
         new_size = self.gui.object_size_edit.text().strip()
         
-        # --- LÓGICA DE FORMATAÇÃO AUTOMÁTICA (250 => DN250) ---
         if new_size.isdigit():
             new_size = f"DN{new_size}"
-            # Atualiza a GUI para mostrar o prefixo adicionado
             self.gui.update_object_size(new_size)
         
         if not new_size:
             if self.curr_object in self.object_sizes:
                 del self.object_sizes[self.curr_object]
+                self.gui.text(f"Removed size for object {self.curr_object}")
         else:
             self.object_sizes[self.curr_object] = new_size
+            self.gui.text(f"Set size for object {self.curr_object} to: {new_size}")
             
         self.save_sizes()
 
@@ -499,6 +506,36 @@ class MainController():
             # self.gui.text(f"Saved labels to {self.labels_file_path}")
         except Exception as e:
             self.gui.text(f"Error saving labels: {e}")
+
+    def load_models(self):
+        if path.exists(self.models_file_path):
+            try:
+                with open(self.models_file_path, 'r') as f:
+                    data = json.load(f)
+                    self.object_models = {int(k): v for k, v in data.items()}
+                log.info(f"Loaded {len(self.object_models)} models.")
+            except Exception as e:
+                log.error(f"Failed to load models: {e}")
+
+    def save_models(self):
+        try:
+            with open(self.models_file_path, 'w') as f:
+                json.dump(self.object_models, f, indent=4)
+        except Exception as e:
+            self.gui.text(f"Error saving models: {e}")
+
+    def on_model_changed(self):
+        text = self.gui.object_model_edit.text().strip()
+        
+        if not text:
+            if self.curr_object in self.object_models:
+                del self.object_models[self.curr_object]
+                self.gui.text(f"Removed model for object {self.curr_object}")
+        else:
+            self.object_models[self.curr_object] = text
+            self.gui.text(f"Set model for object {self.curr_object} to: {text}")
+            
+        self.save_models()
 
     def initialize_networks(self) -> None:
         download_models_if_needed()
@@ -540,6 +577,8 @@ class MainController():
             self.gui.text("Modelo alterado para: SAM 2 (API Remota)")
 
     def hit_number_key(self, number: int):
+        number = int(number)
+
         if number == self.curr_object:
             return
 
@@ -554,6 +593,7 @@ class MainController():
         self.gui.set_object_color(number)
         self.show_current_frame()
         self.gui.update_object_label(self.object_labels.get(self.curr_object, ""))
+        self.gui.update_object_model(self.object_models.get(self.curr_object, ""))
         self.gui.update_object_size(self.object_sizes.get(self.curr_object, ""))
 
     def click_fn(self, action: Literal['left', 'right', 'middle', 'pick'], x: int, y: int):
@@ -1216,6 +1256,7 @@ class MainController():
             self.last_deleted_info = {
                 'id': object_id,
                 'label': self.object_labels.get(object_id, ""),
+                'model': self.object_models.get(object_id, ""),
                 'size': self.object_sizes.get(object_id, ""),
                 'backup_dir': current_backup_dir,
                 'has_soft_mask': has_soft_mask,
@@ -1228,6 +1269,10 @@ class MainController():
                 self.save_labels()
                 if object_id == self.curr_object:
                     self.gui.update_object_label("")
+
+            if object_id in self.object_models: 
+                del self.object_models[object_id]
+                self.save_models()
 
             if object_id in self.object_sizes:
                 del self.object_sizes[object_id]
@@ -1283,6 +1328,10 @@ class MainController():
                 self.object_labels[obj_id] = info['label']
                 self.save_labels()
 
+            if info.get('model'):
+                self.object_models[obj_id] = info['model']
+                self.save_models()
+
             if info.get('size'): # .get() para compatibilidade caso info antigo não tenha size
                 self.object_sizes[obj_id] = info['size']
                 self.save_sizes()
@@ -1291,6 +1340,7 @@ class MainController():
             # Se restauramos o objeto que estamos vendo agora, atualiza
             if self.curr_object == obj_id:
                 self.gui.update_object_label(info['label'])
+                self.gui.update_object_model(info.get('model', ""))
                 self.gui.update_object_size(info.get('size', ""))
             
             # Garante que o seletor de objetos vá até esse ID (caso fosse o último)
