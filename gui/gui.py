@@ -151,8 +151,14 @@ class GUI(QWidget):
         # set up some buttons
         self.play_button = QPushButton('Play video')
         self.play_button.clicked.connect(self.on_play_video)
+        
         self.commit_button = QPushButton('Commit to permanent memory')
         self.commit_button.clicked.connect(controller.on_commit)
+
+        self.init_frame_button = QPushButton('Auto-Init Frame (YOLO)')
+        self.init_frame_button.clicked.connect(controller.on_init_frame_from_yolo)
+        self.init_frame_button.setToolTip("Gera máscaras automaticamente para todas as detecções YOLO neste frame")
+
         self.export_video_button = QPushButton('Export as video')
         self.export_video_button.clicked.connect(controller.on_export_visualization)
         self.export_binary_button = QPushButton('Export binary masks')
@@ -160,11 +166,11 @@ class GUI(QWidget):
 
         self.forward_run_button = QPushButton('Propagate forward')
         self.forward_run_button.clicked.connect(controller.on_forward_propagation)
-        self.forward_run_button.setMinimumWidth(150)
+        #self.forward_run_button.setMinimumWidth(150)
 
         self.backward_run_button = QPushButton('Propagate backward')
         self.backward_run_button.clicked.connect(controller.on_backward_propagation)
-        self.backward_run_button.setMinimumWidth(150)
+        #self.backward_run_button.setMinimumWidth(150)
 
         self.menu_model = self.menu_bar.addMenu("Model AI")
         self.model_action_group = QActionGroup(self)
@@ -175,7 +181,7 @@ class GUI(QWidget):
         self.progressbar.setMinimum(0)
         self.progressbar.setMaximum(100)
         self.progressbar.setValue(0)
-        self.progressbar.setMinimumWidth(200)
+        self.progressbar.setMinimumWidth(300)
 
         # Opção RITM
         self.act_ritm = QAction("RITM (Local - Rápido)", self)
@@ -230,6 +236,16 @@ class GUI(QWidget):
         self.object_label_edit.editingFinished.connect(controller.on_label_changed)
         self.frame_name.setMinimumSize(100, 30)
         self.frame_name.setAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        self.object_model_edit = QLineEdit()
+        self.object_model_edit.setPlaceholderText("Model (VPI)...")
+        self.object_model_edit.setMinimumWidth(120)
+        self.object_model_edit.editingFinished.connect(controller.on_model_changed)
+
+        self.object_size_edit = QLineEdit()
+        self.object_size_edit.setPlaceholderText("Size (DN)...")
+        self.object_size_edit.setMaximumWidth(100) 
+        self.object_size_edit.editingFinished.connect(controller.on_size_changed)
 
         # timeline slider
         self.tl_slider = QSlider(Qt.Orientation.Horizontal)
@@ -345,70 +361,109 @@ class GUI(QWidget):
         with open(Path(__file__).parent / 'TIPS.md', 'r') as f:
             self.tips.setMarkdown(f.read())
 
-        # navigator
         navi = QHBoxLayout()
 
+        # ---------------------------------------------------------
+        # BLOCO 1 (ESQUERDA): Interação e Propriedades do Objeto
+        # ---------------------------------------------------------
         interact_subbox = QVBoxLayout()
         interact_topbox = QHBoxLayout()
         interact_botbox = QHBoxLayout()
+        
+        # Linha de cima (Controles de Frame/Objeto)
         interact_topbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
         interact_topbox.addWidget(self.lcd)
         interact_topbox.addWidget(self.play_button)
         interact_topbox.addWidget(self.reset_frame_button)
         interact_topbox.addWidget(self.reset_object_button)
         interact_topbox.addWidget(self.remove_object_button)
-        interact_botbox.addWidget(QLabel('Current object ID:'))
+        
+        # Linha de baixo (Propriedades: ID -> Label -> Model -> Size)
+        interact_botbox.addWidget(QLabel('ID:')) 
         interact_botbox.addWidget(self.object_dial)
         interact_botbox.addWidget(self.add_object_button)
         interact_botbox.addWidget(self.object_color)
-        interact_botbox.addWidget(self.frame_name)
+        # interact_botbox.addWidget(self.frame_name) # Removido para ganhar espaço
+
+        # 1. Label
+        self.object_label_edit.setMinimumWidth(80)
         interact_botbox.addWidget(self.object_label_edit)
+        
+        # 2. Model
+        self.object_model_edit.setMaximumWidth(100)
+        interact_botbox.addWidget(self.object_model_edit)
+        
+        # 3. Size
+        self.object_size_edit.setMaximumWidth(70)
+        interact_botbox.addWidget(self.object_size_edit)
+        
         interact_subbox.addLayout(interact_topbox)
         interact_subbox.addLayout(interact_botbox)
         interact_botbox.setAlignment(Qt.AlignmentFlag.AlignLeft)
         navi.addLayout(interact_subbox)
 
-        apply_fixed_size_policy = lambda x: x.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.
-                                                            Policy.Fixed)
+        apply_fixed_size_policy = lambda x: x.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         apply_to_all_children_widget(interact_topbox, apply_fixed_size_policy)
         apply_to_all_children_widget(interact_botbox, apply_fixed_size_policy)
 
-        navi.addStretch(1)
-        navi.addStretch(1)
+        navi.addSpacing(15)
+
+        # ---------------------------------------------------------
+        # BLOCO 2 (MEIO): Visualização e Exportação + Undo
+        # ---------------------------------------------------------
         overlay_subbox = QVBoxLayout()
+        
+        self.undo_button = QPushButton("Undo (Ctrl+Z)")
+        self.undo_button.clicked.connect(controller.on_undo_delete)
+        overlay_subbox.addWidget(self.undo_button)
+
         overlay_topbox = QHBoxLayout()
         overlay_botbox = QHBoxLayout()
+        
         overlay_topbox.setAlignment(Qt.AlignmentFlag.AlignLeft)
         overlay_botbox.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        overlay_topbox.addWidget(QLabel('Visualization mode'))
+        
+        overlay_topbox.addWidget(QLabel('Vis:'))
         overlay_topbox.addWidget(self.combo)
-        overlay_topbox.addWidget(QLabel('Save soft mask during propagation'))
         overlay_topbox.addWidget(self.save_soft_mask_checkbox)
         overlay_topbox.addWidget(self.export_binary_button)
-        overlay_botbox.addWidget(QLabel('Save visualization'))
+        
+        overlay_botbox.addWidget(QLabel('Save:'))
         overlay_botbox.addWidget(self.save_visualization_combo)
         overlay_botbox.addWidget(self.export_video_button)
-        overlay_botbox.addWidget(QLabel('Output FPS: '))
+        overlay_botbox.addWidget(QLabel('FPS:'))
         overlay_botbox.addWidget(self.fps_dial)
-        overlay_botbox.addWidget(QLabel('Output bitrate (Mbps): '))
+        overlay_botbox.addWidget(QLabel('Mbps:'))
         overlay_botbox.addWidget(self.bitrate_dial)
+        
         overlay_subbox.addLayout(overlay_topbox)
         overlay_subbox.addLayout(overlay_botbox)
         navi.addLayout(overlay_subbox)
+        
         apply_to_all_children_widget(overlay_topbox, apply_fixed_size_policy)
         apply_to_all_children_widget(overlay_botbox, apply_fixed_size_policy)
 
-        navi.addStretch(1)
+        navi.addSpacing(15)
+
+        # ---------------------------------------------------------
+        # BLOCO 3 (DIREITA): Controles de Propagação
+        # ---------------------------------------------------------
         control_subbox = QVBoxLayout()
         control_topbox = QHBoxLayout()
         control_botbox = QHBoxLayout()
+        
         control_topbox.addWidget(self.commit_button)
+        control_topbox.addWidget(self.init_frame_button)
         control_topbox.addWidget(self.forward_run_button)
         control_topbox.addWidget(self.backward_run_button)
+        
         control_botbox.addWidget(self.progressbar)
+        
         control_subbox.addLayout(control_topbox)
         control_subbox.addLayout(control_botbox)
         navi.addLayout(control_subbox)
+        
+        navi.addStretch(1)
 
         # Drawing area main canvas
         draw_area = QHBoxLayout()
@@ -509,6 +564,7 @@ class GUI(QWidget):
         # Lista de widgets que permitem edição/escrita
         widgets_to_toggle = [
             self.commit_button,
+            self.init_frame_button,
             self.forward_run_button,
             self.backward_run_button,
             self.reset_frame_button,
@@ -520,6 +576,8 @@ class GUI(QWidget):
             self.clear_non_perm_mem_button,
             self.object_dial,
             self.object_label_edit,
+            self.object_model_edit,
+            self.object_size_edit,
             self.save_soft_mask_checkbox
         ]
 
@@ -560,10 +618,19 @@ class GUI(QWidget):
         self.console.insertPlainText(text + '\n')
 
     def update_object_label(self, label_text: str):
-        # block signals to prevent recursive call
         self.object_label_edit.blockSignals(True)
         self.object_label_edit.setText(label_text)
         self.object_label_edit.blockSignals(False)
+
+    def update_object_size(self, size_text: str):
+        self.object_size_edit.blockSignals(True)
+        self.object_size_edit.setText(size_text)
+        self.object_size_edit.blockSignals(False)
+
+    def update_object_model(self, model_text: str):
+        self.object_model_edit.blockSignals(True)
+        self.object_model_edit.setText(model_text)
+        self.object_model_edit.blockSignals(False)
 
     def set_canvas(self, image):
         height, width, channel = image.shape

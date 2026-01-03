@@ -65,6 +65,16 @@ class MainController():
         self.object_labels: Dict[int, str] = {}
         self.labels_file_path = path.join(self.cfg['workspace'], 'object_labels.json')
         self.load_labels()
+
+        self.object_models: Dict[int, str] = {}
+        self.models_file_path = path.join(self.cfg['workspace'], 'models.json')
+        self.load_models()
+
+        self.object_sizes: Dict[int, str] = {}
+        self.sizes_file_path = path.join(self.cfg['workspace'], 'sizes.json')
+        self.load_sizes()
+
+
         # Update num_objects from loaded labels if higher
         cfg['num_objects'] = max(cfg['num_objects'], max(self.object_labels.keys()) if self.object_labels else 0)
         self.initialize_networks()
@@ -145,6 +155,8 @@ class MainController():
         self.gui.set_object_color(self.curr_object)
         self.update_config()
         self.gui.update_object_label(self.object_labels.get(self.curr_object, ""))
+        self.gui.update_object_model(self.object_models.get(self.curr_object, ""))
+        self.gui.update_object_size(self.object_sizes.get(self.curr_object, ""))
 
     def on_load_yolo_json(self):
         file_name = self.gui.open_file('YOLO JSON') # Pode precisar adaptar open_file para aceitar JSON ou usar QFileDialog direto
@@ -175,6 +187,125 @@ class MainController():
             
         except Exception as e:
             self.gui.text(f"Erro ao carregar JSON: {e}")
+
+    def on_init_frame_from_yolo(self):
+        """
+        Inicializa o frame atual processando TODAS as detecções YOLO já carregadas na memória.
+        Gera máscaras com SAM 2 e injeta no sistema.
+        """
+        # 1. Obter candidatos da memória (Hashmap self.yolo_data)
+        candidates = self.get_current_yolo_candidates()
+        
+        if not candidates:
+            self.gui.text(f"Nenhuma detecção YOLO carregada para o frame {self.curr_ti}.")
+            self.gui.text("Dica: Carregue o JSON em 'YOLO -> Load YOLO JSON' primeiro.")
+            return
+
+        # 2. Configuração de Limiares
+        # Ajuste este valor conforme a qualidade do seu detector
+        CONFIDENCE_THRESHOLD = 0.5
+        
+        # Filtra e ordena por confiança (do maior para o menor)
+        valid_candidates = [c for c in candidates if c.get('confidence', 0) >= CONFIDENCE_THRESHOLD]
+        valid_candidates.sort(key=lambda x: x['confidence'], reverse=True)
+        
+        if not valid_candidates:
+            self.gui.text(f"Existem detecções, mas nenhuma com confiança > {CONFIDENCE_THRESHOLD}.")
+            return
+
+        self.gui.text(f"Auto-Init: Processando {len(valid_candidates)} objetos...")
+        self.gui.process_events()
+
+        # 3. Preparar o Canvas Temporário
+        # Se já existir máscara no frame (ex: desenhada à mão), começamos dela.
+        # Se não, criamos uma vazia.
+        if self.curr_mask is not None:
+            final_mask = self.curr_mask.copy()
+        else:
+            final_mask = np.zeros((self.h, self.w), dtype=np.uint8)
+
+        # Determinar o próximo ID disponível
+        # Começamos do maior ID presente na máscara atual + 1, ou do ID 1 se estiver vazia.
+        current_max_id = int(final_mask.max())
+        # Se max for 0 (fundo), começamos do 1. Se for 5, começamos do 6.
+        next_obj_id = current_max_id + 1
+        
+        added_count = 0
+
+        # 4. Loop de Processamento
+        for i, det in enumerate(valid_candidates):
+            bbox = det['bbox_xyxy']
+            class_name = det.get('class_name', 'obj')
+            
+            # Otimização: Verifica se a caixa já está "muito ocupada" antes de chamar a API
+            # Isso economiza tempo de rede se o objeto já estiver segmentado
+            # Mas como é só bbox, o cálculo de IoU aqui seria impreciso, melhor deixar a máscara decidir.
+
+            self.gui.text(f" -> SAM 2 gerando: {class_name} ({i+1}/{len(valid_candidates)})...")
+            self.gui.process_events()
+
+            # Chama a API do SAM 2 (usando seu controlador remoto existente)
+            # Passamos IDs temporários (-1) para não sujar o histórico de cliques de refinamento
+            mask_tensor = self.sam2_ctrl.predict_bbox(
+                self.curr_image_np, 
+                bbox, 
+                frame_idx=self.curr_ti, 
+                obj_id=next_obj_id
+            )
+
+            if mask_tensor is not None:
+                # Converter Tensor (0.0-1.0) para Máscara Booleana Numpy
+                mask_bool = mask_tensor.squeeze().cpu().numpy() > 0.5
+                
+                # --- Lógica de Sobreposição (Overlap) ---
+                # Verifica quantos pixels da nova máscara cairiam em cima de objetos já existentes
+                overlap = np.logical_and(final_mask > 0, mask_bool)
+                overlap_area = np.sum(overlap)
+                mask_area = np.sum(mask_bool)
+                
+                # Se a nova máscara for > 50% coberta por coisas que já existem, ignoramos.
+                # Isso evita duplicatas se o YOLO detectou o mesmo cano duas vezes.
+                if mask_area > 0 and (overlap_area / mask_area) < 0.5:
+                    
+                    # 5. Expandir capacidade do Cutie se necessário
+                    # Se vamos adicionar o objeto 10 e o sistema só suporta 5, precisamos expandir
+                    if next_obj_id > self.num_objects:
+                        self.num_objects = next_obj_id
+                        self.cfg['num_objects'] = self.num_objects
+                        self.gui.object_dial.setMaximum(self.num_objects)
+                        self.res_man.add_object_directory(self.num_objects)
+
+                    # 6. Pintar no Canvas
+                    final_mask[mask_bool] = next_obj_id
+                    
+                    # Registrar Label
+                    self.object_labels[next_obj_id] = f"{class_name}"
+                    
+                    next_obj_id += 1
+                    added_count += 1
+                else:
+                    # Opcional: logar que foi ignorado por sobreposição
+                    pass
+
+        # 7. Atualizar o Sistema (Cutie e UI)
+        if added_count > 0:
+            self.curr_mask = final_mask
+            
+            # Recria o tensor de probabilidades (One-Hot) com o novo tamanho e dados
+            # Isso é CRÍTICO para o Cutie saber que os objetos existem
+            self.curr_prob = index_numpy_to_one_hot_torch(self.curr_mask, self.num_objects + 1).to(
+                self.device, non_blocking=True)
+            
+            self.save_labels()       # Salva os nomes (valves, pipes) no JSON
+            self.save_current_mask() # Salva o PNG no disco
+            self.show_current_frame() # Atualiza a tela
+            
+            self.gui.text(f"Sucesso! {added_count} objetos inicializados no Frame {self.curr_ti}.")
+            
+            # Muda o foco para o último objeto criado para facilitar edição
+            self.hit_number_key(next_obj_id - 1)
+        else:
+            self.gui.text("Processo finalizado, mas nenhum objeto novo foi adicionado (sobreposição ou falha na API).")
 
     def on_toggle_yolo(self, checked):
         self.show_yolo_suggestions = checked
@@ -310,12 +441,52 @@ class MainController():
             obj_id = self.curr_mask[iy, ix]
             
             if obj_id > 0:
-                # Busca o label no dicionário, se não existir usa "No Label"
-                label_text = self.object_labels.get(obj_id, "No Label")
-                # Formata conforme solicitado: ID: X | Class: Y
-                return f"ID: {obj_id} | Class: {label_text}"
-            
+                lbl = self.object_labels.get(obj_id, "No Label")
+                mod = self.object_models.get(obj_id, "")
+                siz = self.object_sizes.get(obj_id, "")
+                
+                # Creates a string in the following pattern (ID: 1 | Butterfly Valve | VPI 54059 | DN200)
+                info = f"ID: {obj_id} | {lbl}"
+                if mod: info += f" | {mod}"
+                if siz: info += f" | {siz}"
+                
+                return info
+                
         return None
+
+    def load_sizes(self):
+        if path.exists(self.sizes_file_path):
+            try:
+                with open(self.sizes_file_path, 'r') as f:
+                    loaded_data = json.load(f)
+                    self.object_sizes = {int(k): v for k, v in loaded_data.items()}
+                log.info(f"Loaded {len(self.object_sizes)} object sizes from {self.sizes_file_path}")
+            except Exception as e:
+                log.error(f"Failed to load sizes: {e}")
+
+    def save_sizes(self):
+        try:
+            with open(self.sizes_file_path, 'w') as f:
+                json.dump(self.object_sizes, f, indent=4)
+        except Exception as e:
+            self.gui.text(f"Error saving sizes: {e}")
+
+    def on_size_changed(self):
+        new_size = self.gui.object_size_edit.text().strip()
+        
+        if new_size.isdigit():
+            new_size = f"DN{new_size}"
+            self.gui.update_object_size(new_size)
+        
+        if not new_size:
+            if self.curr_object in self.object_sizes:
+                del self.object_sizes[self.curr_object]
+                self.gui.text(f"Removed size for object {self.curr_object}")
+        else:
+            self.object_sizes[self.curr_object] = new_size
+            self.gui.text(f"Set size for object {self.curr_object} to: {new_size}")
+            
+        self.save_sizes()
 
     def load_labels(self):
         if path.exists(self.labels_file_path):
@@ -335,6 +506,36 @@ class MainController():
             # self.gui.text(f"Saved labels to {self.labels_file_path}")
         except Exception as e:
             self.gui.text(f"Error saving labels: {e}")
+
+    def load_models(self):
+        if path.exists(self.models_file_path):
+            try:
+                with open(self.models_file_path, 'r') as f:
+                    data = json.load(f)
+                    self.object_models = {int(k): v for k, v in data.items()}
+                log.info(f"Loaded {len(self.object_models)} models.")
+            except Exception as e:
+                log.error(f"Failed to load models: {e}")
+
+    def save_models(self):
+        try:
+            with open(self.models_file_path, 'w') as f:
+                json.dump(self.object_models, f, indent=4)
+        except Exception as e:
+            self.gui.text(f"Error saving models: {e}")
+
+    def on_model_changed(self):
+        text = self.gui.object_model_edit.text().strip()
+        
+        if not text:
+            if self.curr_object in self.object_models:
+                del self.object_models[self.curr_object]
+                self.gui.text(f"Removed model for object {self.curr_object}")
+        else:
+            self.object_models[self.curr_object] = text
+            self.gui.text(f"Set model for object {self.curr_object} to: {text}")
+            
+        self.save_models()
 
     def initialize_networks(self) -> None:
         download_models_if_needed()
@@ -376,6 +577,8 @@ class MainController():
             self.gui.text("Modelo alterado para: SAM 2 (API Remota)")
 
     def hit_number_key(self, number: int):
+        number = int(number)
+
         if number == self.curr_object:
             return
 
@@ -390,6 +593,8 @@ class MainController():
         self.gui.set_object_color(number)
         self.show_current_frame()
         self.gui.update_object_label(self.object_labels.get(self.curr_object, ""))
+        self.gui.update_object_model(self.object_models.get(self.curr_object, ""))
+        self.gui.update_object_size(self.object_sizes.get(self.curr_object, ""))
 
     def click_fn(self, action: Literal['left', 'right', 'middle', 'pick'], x: int, y: int):
         if self.propagating:
@@ -526,20 +731,32 @@ class MainController():
         self.res_man.save_mask(self.curr_ti, self.curr_mask)
 
     def on_slider_update(self):
-        # if we are propagating, the on_run function will take care of everything
-        # don't do duplicate work here
-        self.curr_ti = self.gui.tl_slider.value()
+        # 1. Captura para onde o slider foi movido
+        target_ti = self.gui.tl_slider.value()
+
         if not self.propagating:
-            # with self.vis_cond:
-            #     self.vis_cond.notify()
+            # --- MODO EDIÇÃO / PLAYBACK ---
+            
+            # A. SALVAR O PASSADO: 
+            # Verifica se o frame ANTIGO (self.curr_ti atual) precisa ser salvo.
+            # Como ainda não atualizamos self.curr_ti, isso salva no arquivo correto (o anterior).
             if self.curr_frame_dirty:
                 self.save_current_mask()
+            
             self.curr_frame_dirty = False
 
+            if hasattr(self.click_ctrl, 'reset_context'):
+                self.click_ctrl.reset_context()
+
             self.reset_this_interaction()
-            self.curr_ti = self.gui.tl_slider.value()
+            
+            self.curr_ti = target_ti
+            
             self.load_current_image_mask()
             self.show_current_frame()
+
+        else:
+            self.curr_ti = target_ti
 
     def on_jump_to_frame(self):
         if self.propagating:
@@ -591,34 +808,91 @@ class MainController():
         self.propagating = False
         self.gui.text(f'Propagation stopped at t={self.curr_ti}.')
         self.gui.pause_propagation()
-
+    
     def on_propagate(self):
-        # start to propagate
         with autocast(self.device, enabled=(self.amp and self.device == 'cuda')):
             self.convert_current_image_mask_torch()
 
+            # *** DEBUG LOG 1 ***
+            print(f"\n=== DEBUG: Início on_propagate ===")
+            print(f"curr_ti: {self.curr_ti}")
+            print(f"num_objects (self): {self.num_objects}")
+            print(f"num_objects (cfg): {self.cfg['num_objects']}")
+            print(f"curr_prob.shape: {self.curr_prob.shape if self.curr_prob is not None else 'None'}")
+            print(f"curr_mask unique values: {np.unique(self.curr_mask)}")
+            
             self.gui.text(f'Propagation started at t={self.curr_ti}.')
-            self.processor.clear_sensory_memory()
+            
+            # --- CORREÇÃO: Gerenciamento Inteligente de Memória ---
+            # Detecta se houve mudança no número de objetos desde a última propagação
+            # Registra o estado atual para próxima comparação
+            if not hasattr(self, '_last_propagation_num_objects'):
+                self._last_propagation_num_objects = self.num_objects
+            
+            # Sempre limpa no frame 0 (início do vídeo)
+            if self.curr_ti == 0:
+                print(f"DEBUG: Limpando memória sensorial (frame 0)")
+                self.processor.clear_sensory_memory()
+            # ------------------------------------------------------
 
-            # --- PASSO 1: LIMPEZA DE "FANTASMAS" (MANTIDO) ---
-            # Isso é vital! Remove qualquer ruído (ex: 0.001) do Objeto 1 se ele estiver vazio.
-            # Se não fizermos isso, o processor tentará buscar a memória do Obj 1 e dará KeyError.
+            # 1. Limpeza de Fantasmas (Mantido)
             self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
             self.curr_prob = index_numpy_to_one_hot_torch(self.curr_mask, self.num_objects + 1).to(
                 self.device, non_blocking=True)
-            # -------------------------------------------------
 
-            # --- PASSO 2: PROPAGAÇÃO INICIAL (CORRIGIDO) ---
-            # Voltamos a usar self.curr_prob[1:]. 
-            # Como limpamos os fantasmas acima, o canal do Objeto 1 será totalmente 0.0.
-            # O processador verá zeros, ignorará o Objeto 1 e NÃO dará KeyError, nem tela vermelha.
-            self.curr_prob = self.processor.step(self.curr_image_torch,
-                                                 self.curr_prob[1:], # <--- VOLTAMOS PARA [1:]
-                                                 idx_mask=False)
+            # *** DEBUG LOG 2 ***
+            print(f"DEBUG: Após limpeza de fantasmas")
+            print(f"curr_prob.shape: {self.curr_prob.shape}")
+            print(f"curr_mask unique values: {np.unique(self.curr_mask)}")
+
+            # *** CORREÇÃO: Atualiza a configuração do processador ***
+            print(f"DEBUG: Chamando processor.update_config() com num_objects={self.cfg['num_objects']}")
+            self.processor.update_config(self.cfg)
+            
+            # *** CORREÇÃO CRÍTICA: Reinicializa o processador se o num_objects mudou ***
+            # O update_config não é suficiente - precisamos recriar a instância
+            if hasattr(self, '_last_propagation_num_objects'):
+                if self._last_propagation_num_objects != self.num_objects:
+                    print(f"DEBUG: Recriando InferenceCore para suportar {self.num_objects} objetos")
+                    # Mantém a referência ao modelo Cutie, mas recria o processador
+                    self.processor = InferenceCore(self.cutie, self.cfg)
+                    print(f"DEBUG: InferenceCore recriado com sucesso")
+            
+            # *** DEBUG LOG 3: Verificar estado interno do processador ***
+            try:
+                if hasattr(self.processor, 'num_objects'):
+                    print(f"DEBUG: processor.num_objects = {self.processor.num_objects}")
+                if hasattr(self.processor.memory, 'num_objects'):
+                    print(f"DEBUG: processor.memory.num_objects = {self.processor.memory.num_objects}")
+            except Exception as e:
+                print(f"DEBUG: Erro ao verificar processor state: {e}")
+
+            # 2. Inicialização / Reinserção
+            print(f"DEBUG: Chamando processor.step() com force_permanent=True")
+            
+            # *** CORREÇÃO DEFINITIVA: Converter para formato idx_mask ***
+            # O problema: quando passamos curr_prob[1:] (4 canais), o código em inference_core
+            # linha 280 faz mask[tmp_id] onde tmp_id vai de 1-4, mas mask tem índices 0-3
+            # Solução: Converter probabilidades para máscara de índices antes de passar
+            idx_mask_np = torch_prob_to_numpy_mask(self.curr_prob)  # H x W com valores 0-4
+            idx_mask_torch = torch.from_numpy(idx_mask_np).to(self.device)
+            
+            all_object_ids = list(range(1, self.num_objects + 1))
+            print(f"DEBUG: idx_mask unique values: {torch.unique(idx_mask_torch)}")
+            print(f"DEBUG: Passando object_ids: {all_object_ids}")
+            
+            self.curr_prob = self.processor.step(
+                self.curr_image_torch,
+                idx_mask_torch,              # Passa como H x W (não como canais separados)
+                objects=all_object_ids,
+                idx_mask=True,               # *** CRUCIAL: True aqui ***
+                force_permanent=True
+            )
+            
+            print(f"DEBUG: Após primeiro step(), curr_prob.shape = {self.curr_prob.shape}")
             
             self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
             
-            # Limpa estado de interação e atualiza visualização
             self.interacted_prob = None
             self.reset_this_interaction()
             self.show_current_frame(fast=True, invalid_soft_mask=True)
@@ -631,31 +905,138 @@ class MainController():
             dataset = PropagationReader(self.res_man, self.curr_ti, self.propagate_direction)
             loader = get_data_loader(dataset, self.cfg.num_read_workers)
 
-            # propagate till the end
+            # --- LOOP DE PROPAGAÇÃO ---
+            frame_count = 0
             for data in loader:
                 if not self.propagating:
                     break
+                
+                frame_count += 1
                 self.curr_image_np, self.curr_image_torch = data
                 self.curr_image_torch = self.curr_image_torch.to(self.device, non_blocking=True)
                 self.propagate_fn()
 
+                # *** DEBUG LOG 4 ***
+                print(f"\n--- DEBUG: Frame {self.curr_ti} (iteração {frame_count}) ---")
+                print(f"curr_prob.shape antes do step: {self.curr_prob.shape}")
+
+                # Cutie Propaga
                 self.curr_prob = self.processor.step(self.curr_image_torch)
+                
+                print(f"curr_prob.shape após step: {self.curr_prob.shape}")
+                
                 self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
+
+                # --- FISCAL YOLO ---
+                yolo_candidates = self.yolo_data.get(self.curr_ti, [])
+                stop_propagation = False
+                if yolo_candidates:
+                    high_conf_candidates = [c for c in yolo_candidates if c['confidence'] > 0.8]
+                    print(f"DEBUG: {len(high_conf_candidates)} candidatos YOLO com confiança > 0.8")
+                    
+                    for det in high_conf_candidates:
+                        bbox = det['bbox_xyxy']
+                        if self.is_box_empty_in_mask(bbox, self.curr_mask):
+                            class_name = det.get('class_name', 'Unknown')
+                            self.gui.text(f"ALERTA: Novo objeto detectado: {class_name}")
+                            
+                            # Ação Automática SAM
+                            next_obj_id = self.num_objects + 1
+                            
+                            print(f"DEBUG: Tentando adicionar objeto {next_obj_id}")
+                            print(f"DEBUG: curr_prob.shape ANTES de expansão: {self.curr_prob.shape}")
+                            
+                            # Chama API
+                            mask_tensor = self.sam2_ctrl.predict_bbox(
+                                self.curr_image_np, bbox, frame_idx=self.curr_ti, obj_id=next_obj_id
+                            )
+                            
+                            if mask_tensor is not None:
+                                print(f"DEBUG: Máscara SAM2 recebida, shape: {mask_tensor.shape}")
+                                
+                                # *** CORREÇÃO: Expande curr_prob ANTES ***
+                                old_prob = self.curr_prob
+                                new_shape = (next_obj_id + 1, self.h, self.w)
+                                print(f"DEBUG: Expandindo curr_prob de {old_prob.shape} para {new_shape}")
+                                
+                                self.curr_prob = torch.zeros(new_shape, dtype=old_prob.dtype, device=self.device)
+                                self.curr_prob[:old_prob.shape[0]] = old_prob
+                                
+                                print(f"DEBUG: curr_prob.shape APÓS expansão: {self.curr_prob.shape}")
+                                
+                                # Atualiza metadados
+                                self.on_add_object()
+                                
+                                print(f"DEBUG: Atribuindo máscara ao canal {next_obj_id}")
+                                self.curr_prob[next_obj_id] = mask_tensor
+                                
+                                print(f"DEBUG: Chamando aggregate_wbg")
+                                self.curr_prob = aggregate_wbg(self.curr_prob[1:], keep_bg=True, hard=True)
+                                
+                                print(f"DEBUG: curr_prob.shape após aggregate: {self.curr_prob.shape}")
+                                
+                                self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
+                                self.object_labels[next_obj_id] = class_name
+                                self.save_labels()
+                                
+                                print(f"DEBUG: Objeto {next_obj_id} adicionado com sucesso")
+                                print(f"DEBUG: num_objects atualizado para {self.num_objects}")
+                                
+                                stop_propagation = True
+                                break
+                # -------------------
 
                 self.save_current_mask()
                 self.show_current_frame(fast=True)
-
                 self.update_memory_gauges()
                 self.gui.process_events()
 
-                if self.curr_ti == 0 or self.curr_ti == self.T - 1:
+                if stop_propagation:
+                    self.propagating = False
+                    self.gui.text(f"Pausado para novo objeto {self.num_objects}.")
+                    self.hit_number_key(self.num_objects)
+                    print(f"DEBUG: Propagação pausada no frame {self.curr_ti}")
                     break
 
+                if self.curr_ti == 0 or self.curr_ti == self.T - 1:
+                    print(f"DEBUG: Fim do vídeo alcançado (curr_ti={self.curr_ti})")
+                    break
+
+            print(f"=== DEBUG: Fim on_propagate ===\n")
+            
+            # Atualiza o rastreamento para próxima propagação
+            self._last_propagation_num_objects = self.num_objects
+            
             self.propagating = False
             self.curr_frame_dirty = False
             self.on_pause()
             self.on_slider_update()
             self.gui.process_events()
+
+    def is_box_empty_in_mask(self, bbox, mask_np, threshold=0.1):
+        """
+        Verifica se a região da BBox está 'vazia' na máscara atual.
+        Retorna True se a interseção for desprezível (objeto novo).
+        """
+        x1, y1, x2, y2 = [int(c) for c in bbox]
+        
+        # Garante limites da imagem
+        x1 = max(0, x1); y1 = max(0, y1)
+        x2 = min(self.w, x2); y2 = min(self.h, y2)
+        
+        if x2 <= x1 or y2 <= y1: return False
+
+        # Recorta a região da máscara correspondente à caixa
+        mask_crop = mask_np[y1:y2, x1:x2]
+        
+        # Conta pixels que NÃO são fundo ( > 0 )
+        occupied_pixels = np.count_nonzero(mask_crop)
+        total_pixels = (x2 - x1) * (y2 - y1)
+        
+        occupancy_rate = occupied_pixels / total_pixels
+        
+        # Se menos de 10% (threshold) da caixa estiver ocupada, consideramos "vazia"
+        return occupancy_rate < threshold
 
     def pause_propagation(self):
         self.propagating = False
@@ -741,7 +1122,7 @@ class MainController():
 
         if hasattr(self.click_ctrl, 'reset_context'):
             self.click_ctrl.reset_context()
-            
+
         self.num_objects += 1
         self.cfg['num_objects'] = self.num_objects # Update config
         self.gui.object_dial.setMaximum(self.num_objects) # Update UI
@@ -875,6 +1256,8 @@ class MainController():
             self.last_deleted_info = {
                 'id': object_id,
                 'label': self.object_labels.get(object_id, ""),
+                'model': self.object_models.get(object_id, ""),
+                'size': self.object_sizes.get(object_id, ""),
                 'backup_dir': current_backup_dir,
                 'has_soft_mask': has_soft_mask,
                 'frames_affected': frames_affected
@@ -886,6 +1269,14 @@ class MainController():
                 self.save_labels()
                 if object_id == self.curr_object:
                     self.gui.update_object_label("")
+
+            if object_id in self.object_models: 
+                del self.object_models[object_id]
+                self.save_models()
+
+            if object_id in self.object_sizes:
+                del self.object_sizes[object_id]
+                self.save_sizes()
 
             self.gui.progressbar_update(0)
             self.gui.text(f"Object {object_id} removed. Press Ctrl+Z to Undo.")
@@ -937,10 +1328,20 @@ class MainController():
                 self.object_labels[obj_id] = info['label']
                 self.save_labels()
 
+            if info.get('model'):
+                self.object_models[obj_id] = info['model']
+                self.save_models()
+
+            if info.get('size'): # .get() para compatibilidade caso info antigo não tenha size
+                self.object_sizes[obj_id] = info['size']
+                self.save_sizes()
+
             # 4. Limpeza e UI
             # Se restauramos o objeto que estamos vendo agora, atualiza
             if self.curr_object == obj_id:
                 self.gui.update_object_label(info['label'])
+                self.gui.update_object_model(info.get('model', ""))
+                self.gui.update_object_size(info.get('size', ""))
             
             # Garante que o seletor de objetos vá até esse ID (caso fosse o último)
             if obj_id > self.num_objects:
