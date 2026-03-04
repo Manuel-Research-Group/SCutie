@@ -7,7 +7,7 @@ from omegaconf import DictConfig
 from PySide6.QtWidgets import (QWidget, QComboBox, QCheckBox, QHBoxLayout, QLabel, QPushButton,
                                QTextEdit, QSpinBox, QPlainTextEdit, QVBoxLayout, QSizePolicy,
                                QButtonGroup, QSlider, QRadioButton, QApplication, QFileDialog, 
-                               QLineEdit, QMenuBar, QMenu, QToolTip, QRubberBand)
+                               QLineEdit, QMenuBar, QMenu, QToolTip, QRubberBand, QGridLayout)
 from PySide6.QtGui import (QKeySequence, QShortcut, QTextCursor, QImage, QPixmap, QIcon, QAction, QActionGroup)
 from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QSize
 from PySide6.QtGui import QPainter, QPen, QColor
@@ -151,6 +151,9 @@ class GUI(QWidget):
         # set up some buttons
         self.play_button = QPushButton('Play video')
         self.play_button.clicked.connect(self.on_play_video)
+
+        self.undo_button = QPushButton("Undo (Ctrl+Z)")
+        self.undo_button.clicked.connect(controller.on_undo_delete)
         
         self.commit_button = QPushButton('Commit to permanent memory')
         self.commit_button.clicked.connect(controller.on_commit)
@@ -246,6 +249,12 @@ class GUI(QWidget):
         self.object_size_edit.setPlaceholderText("Size (DN)...")
         self.object_size_edit.setMaximumWidth(100) 
         self.object_size_edit.editingFinished.connect(controller.on_size_changed)
+
+        self.reference_checkbox = QCheckBox("Ref")
+        self.reference_checkbox.stateChanged.connect(controller.on_reference_changed)
+
+        self.inverted_checkbox = QCheckBox("Inverted")
+        self.inverted_checkbox.stateChanged.connect(controller.on_inverted_changed)
 
         # timeline slider
         self.tl_slider = QSlider(Qt.Orientation.Horizontal)
@@ -363,60 +372,61 @@ class GUI(QWidget):
 
         navi = QHBoxLayout()
 
+        apply_fixed_size_policy = lambda x: x.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed) if x else None
+
         # ---------------------------------------------------------
         # BLOCO 1 (ESQUERDA): Interação e Propriedades do Objeto
         # ---------------------------------------------------------
+        # ---------------------------------------------------------
+        # BLOCO 1 (ESQUERDA): Controle de Vídeo e Propriedades do Objeto
+        # ---------------------------------------------------------
         interact_subbox = QVBoxLayout()
-        interact_topbox = QHBoxLayout()
-        interact_botbox = QHBoxLayout()
-        
-        # Linha de cima (Controles de Frame/Objeto)
-        interact_topbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        interact_topbox.addWidget(self.lcd)
-        interact_topbox.addWidget(self.play_button)
-        interact_topbox.addWidget(self.reset_frame_button)
-        interact_topbox.addWidget(self.reset_object_button)
-        interact_topbox.addWidget(self.remove_object_button)
-        
-        # Linha de baixo (Propriedades: ID -> Label -> Model -> Size)
-        interact_botbox.addWidget(QLabel('ID:')) 
-        interact_botbox.addWidget(self.object_dial)
-        interact_botbox.addWidget(self.add_object_button)
-        interact_botbox.addWidget(self.object_color)
-        # interact_botbox.addWidget(self.frame_name) # Removido para ganhar espaço
+        interact_subbox.setSpacing(8) # Espaço entre as linhas verticais
 
-        # 1. Label
-        self.object_label_edit.setMinimumWidth(80)
-        interact_botbox.addWidget(self.object_label_edit)
+        # Linha 1: Controles de Navegação (Timeline/Play/Undo/Resets)
+        video_nav_layout = QHBoxLayout()
+        video_nav_layout.addWidget(self.lcd)
+        video_nav_layout.addWidget(self.play_button)
+        video_nav_layout.addWidget(self.undo_button) # Undo movido para cá para poupar espaço vertical
+        video_nav_layout.addSpacing(10)
+        video_nav_layout.addWidget(self.reset_frame_button)
+        video_nav_layout.addWidget(self.reset_object_button)
+        video_nav_layout.addStretch(1) # Mantém tudo à esquerda
         
-        # 2. Model
-        self.object_model_edit.setMaximumWidth(100)
-        interact_botbox.addWidget(self.object_model_edit)
-        
-        # 3. Size
-        self.object_size_edit.setMaximumWidth(70)
-        interact_botbox.addWidget(self.object_size_edit)
-        
-        interact_subbox.addLayout(interact_topbox)
-        interact_subbox.addLayout(interact_botbox)
-        interact_botbox.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        # Linha 2 e 3: Propriedades do Objeto (Usando Grid para alinhar colunas)
+        obj_props_grid = QGridLayout()
+        obj_props_grid.setContentsMargins(0, 0, 0, 0)
+        obj_props_grid.setHorizontalSpacing(10)
+
+        # Fila A: Identificação
+        obj_props_grid.addWidget(QLabel('ID:'), 0, 0)
+        obj_props_grid.addWidget(self.object_dial, 0, 1)
+        obj_props_grid.addWidget(self.add_object_button, 0, 2)
+        obj_props_grid.addWidget(self.object_color, 0, 3)
+        self.object_label_edit.setMinimumWidth(150) # Dá mais espaço para o nome
+        obj_props_grid.addWidget(self.object_label_edit, 0, 4, 1, 2) # Estende o label
+
+        # Fila B: Metadados (Model, Size, Side, Ref)
+        obj_props_grid.addWidget(self.object_model_edit, 1, 0, 1, 2) # Ocupa 2 colunas
+        obj_props_grid.addWidget(self.object_size_edit, 1, 2)
+        obj_props_grid.addWidget(self.inverted_checkbox, 1, 3)
+        obj_props_grid.addWidget(self.reference_checkbox, 1, 4)
+        obj_props_grid.addWidget(self.remove_object_button, 1, 5) # Botão perigoso no final da linha
+
+        interact_subbox.addLayout(video_nav_layout)
+        interact_subbox.addLayout(obj_props_grid)
         navi.addLayout(interact_subbox)
 
-        apply_fixed_size_policy = lambda x: x.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        apply_to_all_children_widget(interact_topbox, apply_fixed_size_policy)
-        apply_to_all_children_widget(interact_botbox, apply_fixed_size_policy)
-
-        navi.addSpacing(15)
+        # Ajuste de política de tamanho para evitar que os widgets "estiquem" estranhamente
+        for i in range(video_nav_layout.count()):
+            item = video_nav_layout.itemAt(i).widget()
+            if item: apply_fixed_size_policy(item)
 
         # ---------------------------------------------------------
         # BLOCO 2 (MEIO): Visualização e Exportação + Undo
         # ---------------------------------------------------------
         overlay_subbox = QVBoxLayout()
         
-        self.undo_button = QPushButton("Undo (Ctrl+Z)")
-        self.undo_button.clicked.connect(controller.on_undo_delete)
-        overlay_subbox.addWidget(self.undo_button)
-
         overlay_topbox = QHBoxLayout()
         overlay_botbox = QHBoxLayout()
         
@@ -505,6 +515,7 @@ class GUI(QWidget):
         layout.addLayout(draw_area)
         layout.addWidget(self.tl_slider)
         layout.addLayout(navi)
+        layout.setContentsMargins(5, 5, 5, 15)
         self.setLayout(layout)
 
         # timer to play video
@@ -578,7 +589,9 @@ class GUI(QWidget):
             self.object_label_edit,
             self.object_model_edit,
             self.object_size_edit,
-            self.save_soft_mask_checkbox
+            self.save_soft_mask_checkbox,
+            self.reference_checkbox,
+            self.inverted_checkbox
         ]
 
         for widget in widgets_to_toggle:
@@ -631,6 +644,16 @@ class GUI(QWidget):
         self.object_model_edit.blockSignals(True)
         self.object_model_edit.setText(model_text)
         self.object_model_edit.blockSignals(False)
+
+    def update_object_reference(self, is_reference: bool):
+        self.reference_checkbox.blockSignals(True)
+        self.reference_checkbox.setChecked(is_reference)
+        self.reference_checkbox.blockSignals(False)
+
+    def update_object_inverted(self, is_inverted: bool):
+        self.inverted_checkbox.blockSignals(True)
+        self.inverted_checkbox.setChecked(is_inverted)
+        self.inverted_checkbox.blockSignals(False)
 
     def set_canvas(self, image):
         height, width, channel = image.shape

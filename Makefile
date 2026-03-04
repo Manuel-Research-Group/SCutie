@@ -1,0 +1,77 @@
+COLMAP_RECON_DIR = /home/newton/forks/Colmap/data/reconstructions
+WORKSPACES_ROOT = workspaces
+
+.PHONY: publish-workspace-to-colmap clone-workspace
+
+publish-workspace-to-colmap:
+	@# 1. Validação de Argumentos
+	@if [ -z "$(path)" ] || [ -z "$(name)" ]; then \
+		echo "⚠️  Uso incorreto."; \
+		echo "   Execute: make publish-workspace-to-colmap path=pasta_origem name=nome_destino"; \
+		exit 1; \
+	fi
+
+	@# 2. Definição dos caminhos completos
+	# Aqui concatenamos 'workspaces/' com o nome que você passou
+	$(eval SOURCE_DIR := $(WORKSPACES_ROOT)/$(path))
+	$(eval TARGET_DIR := $(COLMAP_RECON_DIR)/$(name))
+
+	@# 3. Verificação: A pasta de origem existe?
+	@if [ ! -d "$(SOURCE_DIR)" ]; then \
+		echo "❌ ERRO: A pasta de origem não foi encontrada:"; \
+		echo "   -> $(SOURCE_DIR)"; \
+		echo "   Verifique se o nome está correto dentro da pasta workspaces."; \
+		exit 1; \
+	fi
+
+	@# 4. Verificação: O destino já existe? (Proteção contra overwrite)
+	@if [ -d "$(TARGET_DIR)" ]; then \
+		echo "❌ ERRO: Já existe um projeto com esse nome no destino:"; \
+		echo "   -> $(TARGET_DIR)"; \
+		echo "   Escolha outro 'name' ou apague a pasta de destino manualmente."; \
+		exit 1; \
+	fi
+
+	@# 5. Execução da Cópia
+	@echo "📦 Publicando workspace..."
+	@echo "   📂 Origem: $(SOURCE_DIR)"
+	@echo "   📂 Destino: $(TARGET_DIR)"
+	@mkdir -p "$(COLMAP_RECON_DIR)"
+	@cp -r "$(SOURCE_DIR)" "$(TARGET_DIR)"
+	@echo "✅ Sucesso! Dados copiados para reconstructions."
+
+clone-workspace:
+	@# 1. Validação de Argumentos
+	@if [ -z "$(src)" ] || [ -z "$(dest)" ]; then \
+		echo "⚠️  Uso incorreto."; \
+		echo "   Execute: make clone-workspace src=workspace_original dest=workspace_clonado"; \
+		exit 1; \
+	fi
+
+	@# 2. Definição dos caminhos completos
+	# Aqui manipulamos caminhos estritamente dentro de WORKSPACES_ROOT
+	$(eval SOURCE_DIR := $(WORKSPACES_ROOT)/$(src))
+	$(eval TARGET_DIR := $(WORKSPACES_ROOT)/$(dest))
+
+	@# 3. Verificação: A pasta de origem existe?
+	@if [ ! -d "$(SOURCE_DIR)" ]; then \
+		echo "❌ ERRO: O workspace de origem não foi encontrado:"; \
+		echo "   -> $(SOURCE_DIR)"; \
+		echo "   Verifique se o nome está correto na pasta de workspaces."; \
+		exit 1; \
+	fi
+
+	@# 4. Verificação: O destino já existe? (Proteção contra overwrite)
+	@if [ -d "$(TARGET_DIR)" ]; then \
+		echo "❌ ERRO: Já existe um workspace com o nome de destino:"; \
+		echo "   -> $(TARGET_DIR)"; \
+		echo "   Escolha outro 'dest' ou apague a pasta existente manualmente."; \
+		exit 1; \
+	fi
+
+	@# 5. Execução da Cópia
+	@echo "🔄 Clonando workspace..."
+	@echo "   📂 Origem:  $(SOURCE_DIR)"
+	@echo "   📂 Destino: $(TARGET_DIR)"
+	@cp -r "$(SOURCE_DIR)" "$(TARGET_DIR)"
+	@echo "✅ Sucesso! Workspace clonado perfeitamente."

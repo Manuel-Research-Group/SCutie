@@ -74,6 +74,13 @@ class MainController():
         self.sizes_file_path = path.join(self.cfg['workspace'], 'sizes.json')
         self.load_sizes()
 
+        self.object_references: Dict[int, bool] = {}
+        self.references_file_path = path.join(self.cfg['workspace'], 'references.json')
+        self.load_references()
+
+        self.object_inverted: Dict[int, bool] = {}
+        self.inverted_file_path = path.join(self.cfg['workspace'], 'inverted.json')
+        self.load_inverted()
 
         # Update num_objects from loaded labels if higher
         cfg['num_objects'] = max(cfg['num_objects'], max(self.object_labels.keys()) if self.object_labels else 0)
@@ -157,6 +164,8 @@ class MainController():
         self.gui.update_object_label(self.object_labels.get(self.curr_object, ""))
         self.gui.update_object_model(self.object_models.get(self.curr_object, ""))
         self.gui.update_object_size(self.object_sizes.get(self.curr_object, ""))
+        self.gui.update_object_reference(self.object_references.get(self.curr_object, False))
+        self.gui.update_object_inverted(self.object_inverted.get(self.curr_object, False))
 
     def on_load_yolo_json(self):
         file_name = self.gui.open_file('YOLO JSON') # Pode precisar adaptar open_file para aceitar JSON ou usar QFileDialog direto
@@ -537,6 +546,55 @@ class MainController():
             
         self.save_models()
 
+    def load_references(self):
+        if path.exists(self.references_file_path):
+            try:
+                with open(self.references_file_path, 'r') as f:
+                    data = json.load(f)
+                    self.object_references = {int(k): v for k, v in data.items()}
+            except Exception as e:
+                log.error(f"Failed to load references: {e}")
+
+    def save_references(self):
+        try:
+            with open(self.references_file_path, 'w') as f:
+                json.dump(self.object_references, f, indent=4)
+        except Exception as e:
+            self.gui.text(f"Error saving references: {e}")
+
+    def on_reference_changed(self, state):
+        is_ref = (state == 2) # Qt.CheckState.Checked
+        self.object_references[self.curr_object] = is_ref
+        self.save_references()
+        status = "Referência" if is_ref else "Não é referência"
+        self.gui.text(f"Objeto {self.curr_object}: {status}")
+
+    def load_inverted(self):
+        if path.exists(self.inverted_file_path):
+            try:
+                with open(self.inverted_file_path, 'r') as f:
+                    data = json.load(f)
+                    # Converte de volta as chaves para inteiros e os valores para booleanos
+                    self.object_inverted = {int(k): bool(v) for k, v in data.items()}
+            except Exception as e:
+                log.error(f"Failed to load inverted definitions: {e}")
+
+    def save_inverted(self):
+        try:
+            with open(self.inverted_file_path, 'w') as f:
+                json.dump(self.object_inverted, f, indent=4)
+        except Exception as e:
+            self.gui.text(f"Error saving inverted definition: {e}")
+
+    def on_inverted_changed(self, state):
+        # 2 representa o estado "Checked" no PySide6/PyQt
+        is_inverted = (state == 2)
+        self.object_inverted[self.curr_object] = is_inverted
+        self.save_inverted()
+        
+        status = "Invertido" if is_inverted else "Normal"
+        self.gui.text(f"Objeto {self.curr_object} definido como: {status}")
+
     def initialize_networks(self) -> None:
         download_models_if_needed()
         self.cutie = CUTIE(self.cfg).eval().to(self.device)
@@ -595,6 +653,8 @@ class MainController():
         self.gui.update_object_label(self.object_labels.get(self.curr_object, ""))
         self.gui.update_object_model(self.object_models.get(self.curr_object, ""))
         self.gui.update_object_size(self.object_sizes.get(self.curr_object, ""))
+        self.gui.update_object_reference(self.object_references.get(self.curr_object, False))
+        self.gui.update_object_inverted(self.object_inverted.get(self.curr_object, False))
 
     def click_fn(self, action: Literal['left', 'right', 'middle', 'pick'], x: int, y: int):
         if self.propagating:
