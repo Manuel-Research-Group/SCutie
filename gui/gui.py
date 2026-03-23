@@ -135,6 +135,34 @@ class GUI(QWidget):
         self.selection_action_group.addAction(self.act_sel_bbox)
         self.selection_menu.addAction(self.act_sel_bbox)
 
+        # Ferramenta: Pincel
+        self.act_sel_brush = QAction("Pincel (+)", self)
+        self.act_sel_brush.setCheckable(True)
+        self.act_sel_brush.setShortcut("E") # Atalho
+        self.act_sel_brush.triggered.connect(lambda: controller.set_selection_tool('brush'))
+        self.selection_action_group.addAction(self.act_sel_brush)
+        self.selection_menu.addAction(self.act_sel_brush)
+
+        # Ferramenta: Borracha
+        self.act_sel_eraser = QAction("Borracha (-)", self)
+        self.act_sel_eraser.setCheckable(True)
+        self.act_sel_eraser.setShortcut("R") # Atalho
+        self.act_sel_eraser.triggered.connect(lambda: controller.set_selection_tool('eraser'))
+        self.selection_action_group.addAction(self.act_sel_eraser)
+        self.selection_menu.addAction(self.act_sel_eraser)
+
+        # Controle de tamanho do Pincel/Borracha
+        self.brush_size_dial, self.brush_size_layout = create_parameter_box(
+            1, 200, 'Tam. Pincel/Borracha:', step=1, callback=self.on_brush_size_change)
+        self.brush_size_dial.blockSignals(True)
+        self.brush_size_dial.setValue(10)
+        self.brush_size_dial.blockSignals(False)
+
+        QShortcut(QKeySequence(Qt.Key.Key_BracketLeft), self).activated.connect(
+            lambda: self._change_brush_size(-5))
+        QShortcut(QKeySequence(Qt.Key.Key_BracketRight), self).activated.connect(
+            lambda: self._change_brush_size(+5))
+
         # Menu YOLO
         self.menu_yolo = self.menu_bar.addMenu("YOLO")
         
@@ -391,6 +419,10 @@ class GUI(QWidget):
         video_nav_layout.addSpacing(10)
         video_nav_layout.addWidget(self.reset_frame_button)
         video_nav_layout.addWidget(self.reset_object_button)
+
+        video_nav_layout.addSpacing(20)
+        #video_nav_layout.addLayout(self.brush_size_layout)
+
         video_nav_layout.addStretch(1) # Mantém tudo à esquerda
         
         # Linha 2 e 3: Propriedades do Objeto (Usando Grid para alinhar colunas)
@@ -484,6 +516,7 @@ class GUI(QWidget):
         right_area.setAlignment(Qt.AlignmentFlag.AlignBottom)
         right_area.addWidget(self.tips)
         # right_area.addStretch(1)
+        # right_area.addLayout(self.brush_size_layout)
 
         # Parameters
         right_area.addLayout(self.perm_mem_gauge_layout)
@@ -504,6 +537,11 @@ class GUI(QWidget):
         import_area.addWidget(self.import_mask_button)
         import_area.addWidget(self.import_layer_button)
         right_area.addLayout(import_area)
+
+        brush_label_row = QHBoxLayout()
+        brush_label_row.addWidget(QLabel("🖌 Tam. Pincel / Borracha:"))
+        brush_label_row.addWidget(self.brush_size_dial)
+        right_area.addLayout(brush_label_row)
 
         # console
         right_area.addWidget(self.console)
@@ -563,8 +601,15 @@ class GUI(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_B), self).activated.connect(controller.on_backward_propagation)
 
         # quit shortcut
-        QShortcut(QKeySequence(Qt.Key.Key_Q), self).activated.connect(self.close)
+        QShortcut(QKeySequence("Ctrl+Q"), self).activated.connect(self.close)
 
+    def _change_brush_size(self, delta: int):
+        new_val = max(1, min(200, self.brush_size_dial.value() + delta))
+        self.brush_size_dial.blockSignals(True)
+        self.brush_size_dial.setValue(new_val)
+        self.brush_size_dial.blockSignals(False)
+        self.controller.brush_size = new_val
+        self.text(f"Pincel: {new_val}px")
 
     def toggle_mode_ui(self, mode: str):
         """
@@ -622,6 +667,10 @@ class GUI(QWidget):
         y *= dominate_ratio
         
         return x, y
+
+    def on_brush_size_change(self):
+        self.controller.brush_size = self.brush_size_dial.value()
+        self.text(f"Tamanho do pincel alterado para: {self.controller.brush_size}")
 
     def resizeEvent(self, event):
         self.controller.show_current_frame()
@@ -746,10 +795,10 @@ class GUI(QWidget):
         # 1. DEBUG E VERIFICAÇÕES INICIAIS
         # -------------------------------------------------------------------------
         btn_name = "Esquerdo" if event.button() == Qt.MouseButton.LeftButton else "Direito" if event.button() == Qt.MouseButton.RightButton else "Outro"
-        self.text(f"--- DEBUG: Clique {btn_name} detectado em ({event.position().x():.1f}, {event.position().y():.1f}) ---")
+        #self.text(f"--- DEBUG: Clique {btn_name} detectado em ({event.position().x():.1f}, {event.position().y():.1f}) ---")
 
         if self.is_pos_out_of_bound(event.position().x(), event.position().y()):
-            self.text("DEBUG: Clique ignorado (Fora dos limites da imagem).")
+            #self.text("DEBUG: Clique ignorado (Fora dos limites da imagem).")
             return
 
         # -------------------------------------------------------------------------
@@ -757,10 +806,20 @@ class GUI(QWidget):
         # -------------------------------------------------------------------------
         # Calculamos aqui para usar em todos os blocos abaixo
         ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
-        self.text(f"DEBUG: Posição escalada na imagem: x={ex:.1f}, y={ey:.1f}")
+        #self.text(f"DEBUG: Posição escalada na imagem: x={ex:.1f}, y={ey:.1f}")
 
         modifiers = QApplication.keyboardModifiers()
 
+        tool = self.controller.selection_tool
+        if tool in ['brush', 'eraser'] and self.controller.app_mode == 'annotation':
+            self.controller.is_drawing = True
+            is_eraser = (tool == 'eraser')
+            if event.button() == Qt.MouseButton.RightButton:
+                is_eraser = not is_eraser
+            # Guarda o estado da borracha para o on_mouse_motion não precisar recalcular
+            self._current_stroke_is_eraser = is_eraser
+            self.controller.apply_brush(ex, ey, is_eraser)
+            return
         # -------------------------------------------------------------------------
         # 3. LÓGICA YOLO (Prioridade Alta - Overlay)
         # -------------------------------------------------------------------------
@@ -852,6 +911,13 @@ class GUI(QWidget):
 
         ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
         
+        tool = self.controller.selection_tool
+        if tool in ['brush', 'eraser'] and getattr(self.controller, 'is_drawing', False):
+            # Usa o flag salvo no press — evita recalcular modifier + botão a cada pixel
+            is_eraser = getattr(self, '_current_stroke_is_eraser', tool == 'eraser')
+            self.controller.apply_brush(ex, ey, is_eraser)
+            return
+
         # Se estiver em modo de visualização, mostra tooltip
         if self.controller.app_mode == 'view':
             info_text = self.controller.get_object_info_at(ex, ey)
@@ -866,6 +932,13 @@ class GUI(QWidget):
             self.on_mouse_motion_xy(ex, ey)
 
     def on_mouse_release(self, event):
+        if getattr(self.controller, 'is_drawing', False):
+            self.controller.is_drawing = False
+            # Uma única sincronização GPU ao terminar o traço
+            self.controller.finish_brush_stroke()
+            self.text("Traço finalizado e salvo.")
+            return
+
         # Finaliza o desenho da BBox
         if not self.rubber_band.isHidden():
             self.rubber_band.hide()

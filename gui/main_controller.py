@@ -100,6 +100,7 @@ class MainController():
         self.interaction_type: str = 'Click'
         self.app_mode: str = 'annotation'
         self.selection_tool: str = 'click'
+        self.brush_size: int = 10
         self.last_deleted_info: Dict = None
         self.curr_ti: int = 0
         self.curr_object: int = 1
@@ -196,6 +197,123 @@ class MainController():
             
         except Exception as e:
             self.gui.text(f"Erro ao carregar JSON: {e}")
+
+    '''
+    def apply_brush(self, x: int, y: int, is_eraser: bool):
+        if self.curr_mask is None:
+            return
+
+        ix, iy = int(x), int(y)
+        radius = self.brush_size
+
+        # Cria uma máscara em branco apenas para o traço circular
+        stroke = np.zeros_like(self.curr_mask, dtype=np.uint8)
+        cv2.circle(stroke, (ix, iy), radius, 1, -1)
+
+        if is_eraser:
+            # A borracha apaga apenas os pixels que pertencem ao objeto atualmente selecionado
+            self.curr_mask[(stroke == 1) & (self.curr_mask == self.curr_object)] = 0
+        else:
+            # O pincel preenche os pixels com o ID do objeto atual
+            self.curr_mask[stroke == 1] = self.curr_object
+
+        # --- CORREÇÃO: Garante que o tensor da imagem na GPU exista ---
+        # (Ele é apagado no update_current_image_fast para salvar memória)
+        self.convert_current_image_mask_torch()
+            
+        self.curr_prob = index_numpy_to_one_hot_torch(self.curr_mask, self.num_objects + 1).to(self.device, non_blocking=True)
+        self.curr_frame_dirty = True
+
+        # Renderiza na tela em modo rápido (fast=True) para não travar enquanto arrasta o mouse
+        self.show_current_frame(fast=True, invalid_soft_mask=True)
+    '''
+
+    def apply_brush(self, x: int, y: int, is_eraser: bool):
+        """
+        FASE 1 — chamada a cada evento de mouse move.
+        100% numpy/CPU. Sem tensores, sem GPU, sem one-hot.
+        Meta: < 5ms por chamada em 1080p.
+        """
+        if self.curr_mask is None:
+            return
+
+        ix, iy = int(x), int(y)
+        radius = self.brush_size
+
+        # Aplica o círculo diretamente na máscara numpy
+        if is_eraser:
+            # cv2.circle com -1 (filled) é implementado em C++ — muito rápido
+            temp = np.zeros_like(self.curr_mask, dtype=np.uint8)
+            cv2.circle(temp, (ix, iy), radius, 1, -1)
+            self.curr_mask[(temp == 1) & (self.curr_mask == self.curr_object)] = 0
+        else:
+            cv2.circle(self.curr_mask, (ix, iy), radius, self.curr_object, -1)
+            # Nota: curr_object é o valor (ID do objeto) pintado diretamente
+
+        self.curr_frame_dirty = True
+
+        # Feedback visual: pinta diretamente no vis_image sem reconstruir nada
+        self._fast_vis_brush(ix, iy, radius, is_eraser)
+
+    def _fast_vis_brush(self, ix: int, iy: int, radius: int, is_eraser: bool):
+        if self.vis_image is None:
+            self.compose_current_im()
+
+        if is_eraser:
+            # Bounding box da região afetada
+            y1 = max(0, iy - radius)
+            y2 = min(self.h, iy + radius + 1)
+            x1 = max(0, ix - radius)
+            x2 = min(self.w, ix + radius + 1)
+
+            # Máscara circular dentro do bounding box (forma correta do pincel)
+            stroke_patch = np.zeros((y2 - y1, x2 - x1), dtype=np.uint8)
+            cv2.circle(stroke_patch, (ix - x1, iy - y1), radius, 1, -1)
+
+            # Máscara da região: só pixels do objeto atual E dentro do círculo
+            mask_patch = self.curr_mask[y1:y2, x1:x2]
+            # Após apply_brush, curr_mask já foi apagado nos pixels do obj atual,
+            # então usamos stroke_patch para identificar a região que FOI apagada
+            # (pixels que estavam no objeto atual antes do apagamento)
+            affected = (stroke_patch == 1)
+
+            # Restaura apenas os pixels afetados para a imagem original (sem overlay)
+            self.vis_image[y1:y2, x1:x2][affected] = self.curr_image_np[y1:y2, x1:x2][affected]
+
+            # Reaplicar cor dos outros objetos que existem nessa região (não afetados pela borracha)
+            # Isso preserva a visualização dos objetos vizinhos intacta
+            for obj_id in np.unique(mask_patch):
+                if obj_id == 0:
+                    continue  # fundo já está como curr_image_np
+                from cutie.utils.palette import davis_palette_np
+                r, g, b = davis_palette_np[obj_id % len(davis_palette_np)]
+                obj_pixels = (mask_patch == obj_id) & affected
+                if obj_pixels.any():
+                    self.vis_image[y1:y2, x1:x2][obj_pixels] = [int(r), int(g), int(b)]
+
+        else:
+            from cutie.utils.palette import davis_palette_np
+            palette_idx = self.curr_object % len(davis_palette_np)
+            r, g, b = davis_palette_np[palette_idx]
+            color = (int(r), int(g), int(b))
+            cv2.circle(self.vis_image, (ix, iy), radius, color, -1)
+
+        self.gui.set_canvas(self.vis_image)
+
+    def finish_brush_stroke(self):
+        # Garante que a imagem numpy está carregada antes de criar o tensor
+        if self.curr_image_np is None or self.curr_image_np.max() == 0:
+            self.curr_image_np = self.res_man.get_image(self.curr_ti)
+        
+        self.curr_image_torch = None  # força recarregamento
+        self.convert_current_image_mask_torch()
+        self.curr_prob = index_numpy_to_one_hot_torch(
+            self.curr_mask, self.num_objects + 1
+        ).to(self.device, non_blocking=True)
+        self.compose_current_im()
+        self.update_canvas()
+        self.save_current_mask()
+        self.curr_frame_dirty = False
 
     def on_init_frame_from_yolo(self):
         """
@@ -883,6 +1001,239 @@ class MainController():
             
             self.gui.text(f'Propagation started at t={self.curr_ti}.')
             
+            # --- Gerenciamento Inteligente de Memória ---
+            if not hasattr(self, '_last_propagation_num_objects'):
+                self._last_propagation_num_objects = self.num_objects
+            
+            # Sempre limpa no frame 0 (início do vídeo)
+            if self.curr_ti == 0:
+                print(f"DEBUG: Limpando memória sensorial (frame 0)")
+                self.processor.clear_sensory_memory()
+            # ------------------------------------------------------
+
+            # 1. Limpeza de Fantasmas
+            self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
+            self.curr_prob = index_numpy_to_one_hot_torch(self.curr_mask, self.num_objects + 1).to(
+                self.device, non_blocking=True)
+
+            # *** DEBUG LOG 2 ***
+            print(f"DEBUG: Após limpeza de fantasmas")
+            print(f"curr_prob.shape: {self.curr_prob.shape}")
+            print(f"curr_mask unique values: {np.unique(self.curr_mask)}")
+
+            print(f"DEBUG: Chamando processor.update_config() com num_objects={self.cfg['num_objects']}")
+            self.processor.update_config(self.cfg)
+            
+            # Reinicializa o processador se o num_objects mudou
+            if hasattr(self, '_last_propagation_num_objects'):
+                if self._last_propagation_num_objects != self.num_objects:
+                    print(f"DEBUG: Recriando InferenceCore para suportar {self.num_objects} objetos")
+                    self.processor = InferenceCore(self.cutie, self.cfg)
+                    print(f"DEBUG: InferenceCore recriado com sucesso")
+            
+            # 2. Inicialização / Reinserção
+            print(f"DEBUG: Chamando processor.step() com force_permanent=True")
+            
+            idx_mask_np = torch_prob_to_numpy_mask(self.curr_prob)
+            idx_mask_torch = torch.from_numpy(idx_mask_np).to(self.device, dtype=torch.long)
+            
+            all_object_ids = list(range(1, self.num_objects + 1))
+            
+            # --- FIX 1: Criação da LUT (LookUp Table) O(1) ANTES do step inicial ---
+            self.active_prop_objects = torch.unique(idx_mask_torch).to(torch.long)
+            self.is_active_lut = torch.zeros(self.num_objects + 1, dtype=torch.bool, device=self.device)
+            self.is_active_lut[self.active_prop_objects] = True
+            
+            print(f"DEBUG: idx_mask unique values: {torch.unique(idx_mask_torch)}")
+            print(f"DEBUG: Passando object_ids: {all_object_ids}")
+            
+            self.curr_prob = self.processor.step(
+                self.curr_image_torch,
+                idx_mask_torch,
+                objects=all_object_ids,
+                idx_mask=True,
+                force_permanent=True
+            )
+            
+            print(f"DEBUG: Após primeiro step(), curr_prob.shape = {self.curr_prob.shape}")
+            
+            self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
+            
+            self.interacted_prob = None
+            self.reset_this_interaction()
+            self.show_current_frame(fast=True, invalid_soft_mask=True)
+
+            self.propagating = True
+            self.gui.clear_all_mem_button.setEnabled(False)
+            self.gui.clear_non_perm_mem_button.setEnabled(False)
+            self.gui.tl_slider.setEnabled(False)
+
+            dataset = PropagationReader(self.res_man, self.curr_ti, self.propagate_direction)
+            loader = get_data_loader(dataset, self.cfg.num_read_workers)
+
+            # --- LOOP DE PROPAGAÇÃO ---
+            frame_count = 0
+            for data in loader:
+                if not self.propagating:
+                    break
+                
+                frame_count += 1
+                self.curr_image_np, self.curr_image_torch = data
+                self.curr_image_torch = self.curr_image_torch.to(self.device, non_blocking=True)
+                self.propagate_fn()
+
+                # *** DEBUG LOG 4 ***
+                print(f"\n--- DEBUG: Frame {self.curr_ti} (iteração {frame_count}) ---")
+                print(f"curr_prob.shape antes do step: {self.curr_prob.shape}")
+
+                # Cutie Propaga (A única passada pela rede neural no loop)
+                self.curr_prob = self.processor.step(self.curr_image_torch)
+                
+                print(f"curr_prob.shape após step: {self.curr_prob.shape}")
+
+                # --- FIX 2, 3 e 4: PRESERVAÇÃO RÁPIDA DE MÁSCARAS (100% na GPU) ---
+                existing_mask_np = self.res_man.get_mask(self.curr_ti)
+                if existing_mask_np is not None:
+                    # Traz para a GPU como LongTensor para indexação correta
+                    existing_mask_t = torch.from_numpy(existing_mask_np).to(self.device, dtype=torch.long)
+                    
+                    # FIX 3: Usa argmax para não alocar o tensor de 'values' (mais limpo e eficiente)
+                    propagated_mask_t = torch.argmax(self.curr_prob, dim=0)
+                    final_mask_t = propagated_mask_t.clone()
+                    
+                    # FIX 1 (Uso da LUT): O(1) Lookup instantâneo
+                    is_active_mask = self.is_active_lut[existing_mask_t] 
+                    
+                    # Regra 1: restaurar objetos do futuro (que não estão na LUT)
+                    untracked_mask = (existing_mask_t > 0) & (~is_active_mask)
+                    final_mask_t[untracked_mask] = existing_mask_t[untracked_mask]
+                    
+                    # Regra 2: proteger objetos consolidados de serem sobrescritos
+                    conflict_mask = (existing_mask_t > 0) & (final_mask_t > 0) & (existing_mask_t != final_mask_t)
+                    final_mask_t[conflict_mask] = existing_mask_t[conflict_mask]
+                    
+                    # Atualiza curr_prob SEM chamar processor.step() novamente (FIX 2)
+                    if untracked_mask.any() or conflict_mask.any():
+                        
+                        # FIX 4: 100% GPU-native One-Hot Encoding
+                        # Evita round-trip para CPU e substitui o index_numpy_to_one_hot_torch original
+                        self.curr_prob = torch.nn.functional.one_hot(
+                            final_mask_t, num_classes=self.num_objects + 1
+                        ).permute(2, 0, 1).float()
+
+                # Mantém o array numpy atualizado para as funções de visualização da UI
+                self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
+
+                # --- FISCAL YOLO ---
+                yolo_candidates = self.yolo_data.get(self.curr_ti, [])
+                stop_propagation = False
+                if yolo_candidates:
+                    high_conf_candidates = [c for c in yolo_candidates if c['confidence'] > 0.8]
+                    print(f"DEBUG: {len(high_conf_candidates)} candidatos YOLO com confiança > 0.8")
+                    
+                    for det in high_conf_candidates:
+                        bbox = det['bbox_xyxy']
+                        if self.is_box_empty_in_mask(bbox, self.curr_mask):
+                            class_name = det.get('class_name', 'Unknown')
+                            self.gui.text(f"ALERTA: Novo objeto detectado: {class_name}")
+                            
+                            # Ação Automática SAM
+                            next_obj_id = self.num_objects + 1
+                            
+                            print(f"DEBUG: Tentando adicionar objeto {next_obj_id}")
+                            print(f"DEBUG: curr_prob.shape ANTES de expansão: {self.curr_prob.shape}")
+                            
+                            # Chama API
+                            mask_tensor = self.sam2_ctrl.predict_bbox(
+                                self.curr_image_np, bbox, frame_idx=self.curr_ti, obj_id=next_obj_id
+                            )
+                            
+                            if mask_tensor is not None:
+                                print(f"DEBUG: Máscara SAM2 recebida, shape: {mask_tensor.shape}")
+                                
+                                # Expande curr_prob ANTES
+                                old_prob = self.curr_prob
+                                new_shape = (next_obj_id + 1, self.h, self.w)
+                                print(f"DEBUG: Expandindo curr_prob de {old_prob.shape} para {new_shape}")
+                                
+                                self.curr_prob = torch.zeros(new_shape, dtype=old_prob.dtype, device=self.device)
+                                self.curr_prob[:old_prob.shape[0]] = old_prob
+                                
+                                print(f"DEBUG: curr_prob.shape APÓS expansão: {self.curr_prob.shape}")
+                                
+                                # Atualiza metadados
+                                self.on_add_object()
+                                
+                                # Proteger os objetos durante a auto-adição YOLO na propagação
+                                other_objs_mask = torch.zeros_like(mask_tensor, dtype=torch.bool).squeeze()
+                                # Verifica todos os canais existentes, exceto o background (0) e o recém-criado
+                                for i in range(1, self.curr_prob.shape[0] - 1): 
+                                    other_objs_mask |= (self.curr_prob[i].squeeze() > 0.5)
+                                    
+                                safe_mask_tensor = mask_tensor.clone().squeeze()
+                                safe_mask_tensor[other_objs_mask] = 0.0
+                                
+                                print(f"DEBUG: Atribuindo máscara ao canal {next_obj_id}")
+                                self.curr_prob[next_obj_id] = safe_mask_tensor
+                                
+                                print(f"DEBUG: Chamando aggregate_wbg")
+                                self.curr_prob = aggregate_wbg(self.curr_prob[1:], keep_bg=True, hard=True)
+                                
+                                print(f"DEBUG: curr_prob.shape após aggregate: {self.curr_prob.shape}")
+                                
+                                self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
+                                self.object_labels[next_obj_id] = class_name
+                                self.save_labels()
+                                
+                                print(f"DEBUG: Objeto {next_obj_id} adicionado com sucesso")
+                                print(f"DEBUG: num_objects atualizado para {self.num_objects}")
+                                
+                                stop_propagation = True
+                                break
+                # -------------------
+
+                self.save_current_mask()
+                self.show_current_frame(fast=True)
+                self.update_memory_gauges()
+                self.gui.process_events()
+
+                if stop_propagation:
+                    self.propagating = False
+                    self.gui.text(f"Pausado para novo objeto {self.num_objects}.")
+                    self.hit_number_key(self.num_objects)
+                    print(f"DEBUG: Propagação pausada no frame {self.curr_ti}")
+                    break
+
+                if self.curr_ti == 0 or self.curr_ti == self.T - 1:
+                    print(f"DEBUG: Fim do vídeo alcançado (curr_ti={self.curr_ti})")
+                    break
+
+            print(f"=== DEBUG: Fim on_propagate ===\n")
+            
+            # Atualiza o rastreamento para próxima propagação
+            self._last_propagation_num_objects = self.num_objects
+            
+            self.propagating = False
+            self.curr_frame_dirty = False
+            self.on_pause()
+            self.on_slider_update()
+            self.gui.process_events()
+
+    '''
+    def on_propagate(self):
+        with autocast(self.device, enabled=(self.amp and self.device == 'cuda')):
+            self.convert_current_image_mask_torch()
+
+            # *** DEBUG LOG 1 ***
+            print(f"\n=== DEBUG: Início on_propagate ===")
+            print(f"curr_ti: {self.curr_ti}")
+            print(f"num_objects (self): {self.num_objects}")
+            print(f"num_objects (cfg): {self.cfg['num_objects']}")
+            print(f"curr_prob.shape: {self.curr_prob.shape if self.curr_prob is not None else 'None'}")
+            print(f"curr_mask unique values: {np.unique(self.curr_mask)}")
+            
+            self.gui.text(f'Propagation started at t={self.curr_ti}.')
+            
             # --- CORREÇÃO: Gerenciamento Inteligente de Memória ---
             # Detecta se houve mudança no número de objetos desde a última propagação
             # Registra o estado atual para próxima comparação
@@ -934,18 +1285,21 @@ class MainController():
             # O problema: quando passamos curr_prob[1:] (4 canais), o código em inference_core
             # linha 280 faz mask[tmp_id] onde tmp_id vai de 1-4, mas mask tem índices 0-3
             # Solução: Converter probabilidades para máscara de índices antes de passar
-            idx_mask_np = torch_prob_to_numpy_mask(self.curr_prob)  # H x W com valores 0-4
-            idx_mask_torch = torch.from_numpy(idx_mask_np).to(self.device)
+            idx_mask_np = torch_prob_to_numpy_mask(self.curr_prob)
+            idx_mask_torch = torch.from_numpy(idx_mask_np).to(self.device, dtype=torch.long)
             
             all_object_ids = list(range(1, self.num_objects + 1))
-            print(f"DEBUG: idx_mask unique values: {torch.unique(idx_mask_torch)}")
-            print(f"DEBUG: Passando object_ids: {all_object_ids}")
+            
+            # --- FIX 1: Criação da LUT (LookUp Table) O(1) ANTES do step inicial ---
+            self.active_prop_objects = torch.unique(idx_mask_torch).to(torch.long)
+            self.is_active_lut = torch.zeros(self.num_objects + 1, dtype=torch.bool, device=self.device)
+            self.is_active_lut[self.active_prop_objects] = True
             
             self.curr_prob = self.processor.step(
                 self.curr_image_torch,
-                idx_mask_torch,              # Passa como H x W (não como canais separados)
+                idx_mask_torch,
                 objects=all_object_ids,
-                idx_mask=True,               # *** CRUCIAL: True aqui ***
+                idx_mask=True,
                 force_permanent=True
             )
             
@@ -985,6 +1339,34 @@ class MainController():
                 
                 print(f"curr_prob.shape após step: {self.curr_prob.shape}")
                 
+                existing_mask_np = self.res_man.get_mask(self.curr_ti)
+                if existing_mask_np is not None:
+                    existing_mask_t = torch.from_numpy(existing_mask_np).to(self.device, dtype=torch.long)
+                    propagated_mask_t = torch.max(self.curr_prob, dim=0).indices
+                    
+                    final_mask_t = propagated_mask_t.clone()
+                    
+                    # 1. Restaurar objetos do futuro (ex: marcados no frame 50) que não estão na propagação atual
+                    # (Se o objeto estava no frame, mas não estava no frame inicial 25, nós o resgatamos)
+                    untracked_mask = (existing_mask_t > 0) & (~torch.isin(existing_mask_t, self.active_prop_objects))
+                    final_mask_t[untracked_mask] = existing_mask_t[untracked_mask]
+                    
+                    # 2. Impedir que a propagação sobrescreva pixels de outros objetos já consolidados na tela
+                    conflict_mask = (existing_mask_t > 0) & (final_mask_t > 0) & (existing_mask_t != final_mask_t)
+                    final_mask_t[conflict_mask] = existing_mask_t[conflict_mask]
+                    
+                    # Se salvamos algum pixel, atualizamos a memória do Cutie para ele aprender essa correção
+                    if untracked_mask.any() or conflict_mask.any():
+                        self.curr_prob = index_numpy_to_one_hot_torch(final_mask_t.cpu().numpy(), self.num_objects + 1).to(self.device)
+                        self.processor.step(
+                            self.curr_image_torch,
+                            final_mask_t,
+                            objects=all_object_ids,
+                            idx_mask=True,
+                            force_permanent=True
+                        )
+                # --- FIM DA CORREÇÃO ---
+
                 self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
 
                 # --- FISCAL YOLO ---
@@ -1072,6 +1454,7 @@ class MainController():
             self.on_pause()
             self.on_slider_update()
             self.gui.process_events()
+    '''
 
     def is_box_empty_in_mask(self, bbox, mask_np, threshold=0.1):
         """

@@ -91,9 +91,18 @@ class ClickInteraction(Interaction):
 
     def predict(self) -> torch.Tensor:
         self.out_prob = self.prev_mask.clone()
-        # a small hack to allow the interacting object to overwrite existing masks
-        # without remembering all the object probabilities
-        self.out_prob = torch.clamp(self.out_prob, max=0.9)
-        self.out_prob[self.tar_obj] = self.obj_mask
+        
+        # --- NOVA REGRA: Proteger os pixels de outros objetos já existentes ---
+        # Cria uma máscara consolidada dos OUTROS objetos (onde a probabilidade > 0.5)
+        other_objs_mask = torch.zeros_like(self.obj_mask, dtype=torch.bool)
+        for i in range(1, self.out_prob.shape[0]):
+            if i != self.tar_obj:
+                other_objs_mask |= (self.out_prob[i] > 0.5)
+        
+        # Zera a predição do clique atual nos pixels onde já existe outro objeto
+        safe_obj_mask = self.obj_mask.clone()
+        safe_obj_mask[other_objs_mask] = 0.0
+        
+        self.out_prob[self.tar_obj] = safe_obj_mask
         self.out_prob = aggregate_wbg(self.out_prob[1:], keep_bg=True, hard=True)
         return self.out_prob
