@@ -1,7 +1,7 @@
 import os
 from os import path
 import logging
-from typing import Literal, Dict, Optional
+from typing import Literal, Dict
 import json
 import cv2
 # fix conflicts between qt5 and cv2
@@ -31,8 +31,6 @@ from gui.exporter import convert_frames_to_video, convert_mask_to_binary
 from gui.remote_sam_controller import RemoteSAMController
 
 from cutie.utils.download_models import download_models_if_needed
-
-from cotracker.predictor import CoTrackerPredictor
 
 import shutil
 from PySide6.QtWidgets import QMessageBox
@@ -84,17 +82,6 @@ class MainController():
         self.inverted_file_path = path.join(self.cfg['workspace'], 'inverted.json')
         self.load_inverted()
 
-        self.object_connections: Dict[int, list] = {}
-        self.connections_file_path = path.join(self.cfg['workspace'], 'connections.json')
-        self.load_connections()
-
-        self.object_possible_connections: Dict[int, int] = {}
-        self.possible_connections_file_path = path.join(self.cfg['workspace'], 'possible_connections.json')
-        self.load_possible_connections()
-
-        self.polylines_file_path = path.join(self.cfg['workspace'], 'polylines.json')
-        self.load_polylines()
-
         # Update num_objects from loaded labels if higher
         cfg['num_objects'] = max(cfg['num_objects'], max(self.object_labels.keys()) if self.object_labels else 0)
         self.initialize_networks()
@@ -113,7 +100,6 @@ class MainController():
         self.interaction_type: str = 'Click'
         self.app_mode: str = 'annotation'
         self.selection_tool: str = 'click'
-        self.brush_size: int = 10
         self.last_deleted_info: Dict = None
         self.curr_ti: int = 0
         self.curr_object: int = 1
@@ -167,12 +153,6 @@ class MainController():
 
         self.active_model_name = 'RITM'
 
-        # Dict[obj_id, List[Tuple[frame_idx, x, y]]]
-        # Cada objeto possui sua própria cerca de contenção independente.
-        self.negative_anchors: Dict[int, list] = {}
-        self.tracked_points: Dict[int, torch.Tensor] = {}    # {obj_id: Tensor[T, N, 2]}
-        self.tracked_visibility: Dict[int, torch.Tensor] = {} # {obj_id: Tensor[T, N]}
-
         self.gui.showMaximized()
         self.gui.text('Initialized.')
         self.initialized = True
@@ -186,166 +166,6 @@ class MainController():
         self.gui.update_object_size(self.object_sizes.get(self.curr_object, ""))
         self.gui.update_object_reference(self.object_references.get(self.curr_object, False))
         self.gui.update_object_inverted(self.object_inverted.get(self.curr_object, False))
-
-    def _build_barrier_mask(
-        self,
-        obj_id: int,
-        frame_idx: int,
-        use_tracked: bool = False
-    ) -> torch.Tensor | None:
-        """
-        Constrói uma máscara booleana (H, W) na GPU representando a polyline
-        de contenção do objeto `obj_id` no frame `frame_idx`.
-
-        Retorna None se não houver âncoras válidas para este objeto/frame.
-
-        Args:
-            obj_id:       ID do objeto cujas âncoras serão usadas.
-            frame_idx:    Índice do frame a ser avaliado.
-            use_tracked:  Se True, usa os pontos rastreados pelo Co-Tracker
-                        (para uso durante a propagação). Se False, usa as
-                        âncoras estáticas originais (para marcação estática).
-        """
-        points_xy: list[tuple[int, int]] = []
-
-        if use_tracked and obj_id in self.tracked_points:
-            # --- Fonte: Co-Tracker (propagação) ---
-            tracks = self.tracked_points[obj_id]     # [T, N, 2]
-            visibility = self.tracked_visibility[obj_id]  # [T, N]
-
-            if frame_idx >= tracks.shape[0]:
-                return None
-
-            pts_t = tracks[frame_idx]    # [N, 2]
-            vis_t = visibility[frame_idx]  # [N]
-
-            for i in range(pts_t.shape[0]):
-                if vis_t[i].item():  # Ignora pontos ocluídos (drift tolerance)
-                    x = int(pts_t[i, 0].item())
-                    y = int(pts_t[i, 1].item())
-                    if 0 <= x < self.w and 0 <= y < self.h:
-                        points_xy.append((x, y))
-        else:
-            # --- Fonte: Âncoras estáticas (marcação interativa) ---
-            anchors = self.negative_anchors.get(obj_id, [])
-            for (t, x, y) in anchors:
-                if t == frame_idx:
-                    points_xy.append((int(x), int(y)))
-
-        if len(points_xy) < 2:
-            # Com menos de 2 pontos não há linha — sem barreira.
-            return None
-
-        # Desenha a polyline em uma máscara numpy (CPU) usando OpenCV.
-        # isClosed=False: parede aberta (fence), não fecha o polígono.
-        # thickness=2: minimiza dano por drift do rastreador.
-        barrier_np = np.zeros((self.h, self.w), dtype=np.uint8)
-        pts_array = np.array(points_xy, dtype=np.int32).reshape((-1, 1, 2))
-        cv2.polylines(barrier_np, [pts_array], isClosed=False, color=1, thickness=2)
-
-        # Converte para tensor booleano na GPU — operação única, sem loop de pixels.
-        barrier_torch = torch.from_numpy(barrier_np).bool().to(self.device, non_blocking=True)
-        return barrier_torch
-
-    def _apply_polyline_barrier(
-        self,
-        prob: torch.Tensor,
-        obj_id: int,
-        frame_idx: int,
-        use_tracked: bool = False
-    ) -> torch.Tensor:
-        """
-        Aplica a restrição geométrica da polyline ao tensor de probabilidades,
-        respeitando o isolamento estrito entre objetos (critério não-destrutivo).
-
-        Apenas o canal do objeto `obj_id` e o background (canal 0) são tocados.
-        Todos os demais canais permanecem intactos, garantindo que objetos
-        adjacentes consolidados não sofram dano algum.
-
-        Args:
-            prob:         Tensor [num_objects+1, H, W] de probabilidades.
-            obj_id:       ID do objeto ativo (dono da polyline).
-            frame_idx:    Índice do frame atual.
-            use_tracked:  Passa para _build_barrier_mask.
-
-        Returns:
-            O tensor `prob` modificado in-place com a barreira aplicada.
-        """
-        barrier = self._build_barrier_mask(obj_id, frame_idx, use_tracked)
-
-        if barrier is None:
-            return prob
-
-        # Garante que o canal do objeto existe no tensor.
-        if obj_id >= prob.shape[0]:
-            return prob
-
-        # --- CORTE MATEMÁTICO (indexação mascarada, sem loops de pixels) ---
-        # Zera probabilidade do objeto-alvo nos pixels da barreira.
-        prob[obj_id, barrier] = 0.0
-        # Força background nos mesmos pixels.
-        prob[0, barrier] = 1.0
-        # Todos os outros canais (outros objetos) são preservados intactos.
-
-        return prob
-
-    def on_apply_exclusion_polygon(self) -> None:
-        """
-        Apaga da máscara do objeto ativo tudo que está DENTRO do polígono
-        definido pelos vértices do frame atual. O polígono é fechado
-        automaticamente (primeiro vértice conecta ao último).
-        """
-        obj_id = self.curr_object
-        anchors = self.negative_anchors.get(obj_id, [])
-        pts = [(int(x), int(y)) for (t, x, y) in anchors if t == self.curr_ti]
-
-        if len(pts) < 3:
-            self.gui.text("Polígono de exclusão requer ao menos 3 vértices.")
-            return
-
-        # Rasteriza o polígono preenchido — cv2.fillPoly fecha automaticamente
-        exclusion_mask = np.zeros((self.h, self.w), dtype=np.uint8)
-        pts_array = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
-        cv2.fillPoly(exclusion_mask, [pts_array], color=1)
-
-        # Remove apenas os pixels do objeto ativo dentro do polígono
-        # Objetos adjacentes não são tocados
-        self.curr_mask[(exclusion_mask == 1) & (self.curr_mask == obj_id)] = 0
-
-        self.curr_prob = index_numpy_to_one_hot_torch(
-            self.curr_mask, self.num_objects + 1
-        ).to(self.device, non_blocking=True)
-
-        self.save_current_mask()
-        self.show_current_frame()
-        self.gui.text(
-            f"Polígono de exclusão aplicado: Obj {obj_id}, "
-            f"{len(pts)} vértices, frame {self.curr_ti}."
-        )
-
-    def on_apply_polyline_to_current_frame(self) -> None:
-        """
-        Aplica imediatamente a polyline do objeto ativo sobre a máscara
-        do frame atual. Útil após desenhar a cerca sobre uma máscara
-        já existente, sem precisar fazer um novo clique.
-        """
-        self.convert_current_image_mask_torch()
-
-        self.curr_prob = self._apply_polyline_barrier(
-            self.curr_prob,
-            obj_id=self.curr_object,
-            frame_idx=self.curr_ti,
-            use_tracked=False
-        )
-
-        # Atualiza máscara numpy, salva e redesenha
-        self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
-        self.save_current_mask()
-        self.show_current_frame()
-        self.curr_frame_dirty = False
-        self.gui.text(
-            f"Polyline aplicada ao frame {self.curr_ti}, Obj {self.curr_object}."
-        )
 
     def on_load_yolo_json(self):
         file_name = self.gui.open_file('YOLO JSON') # Pode precisar adaptar open_file para aceitar JSON ou usar QFileDialog direto
@@ -376,123 +196,6 @@ class MainController():
             
         except Exception as e:
             self.gui.text(f"Erro ao carregar JSON: {e}")
-
-    '''
-    def apply_brush(self, x: int, y: int, is_eraser: bool):
-        if self.curr_mask is None:
-            return
-
-        ix, iy = int(x), int(y)
-        radius = self.brush_size
-
-        # Cria uma máscara em branco apenas para o traço circular
-        stroke = np.zeros_like(self.curr_mask, dtype=np.uint8)
-        cv2.circle(stroke, (ix, iy), radius, 1, -1)
-
-        if is_eraser:
-            # A borracha apaga apenas os pixels que pertencem ao objeto atualmente selecionado
-            self.curr_mask[(stroke == 1) & (self.curr_mask == self.curr_object)] = 0
-        else:
-            # O pincel preenche os pixels com o ID do objeto atual
-            self.curr_mask[stroke == 1] = self.curr_object
-
-        # --- CORREÇÃO: Garante que o tensor da imagem na GPU exista ---
-        # (Ele é apagado no update_current_image_fast para salvar memória)
-        self.convert_current_image_mask_torch()
-            
-        self.curr_prob = index_numpy_to_one_hot_torch(self.curr_mask, self.num_objects + 1).to(self.device, non_blocking=True)
-        self.curr_frame_dirty = True
-
-        # Renderiza na tela em modo rápido (fast=True) para não travar enquanto arrasta o mouse
-        self.show_current_frame(fast=True, invalid_soft_mask=True)
-    '''
-
-    def apply_brush(self, x: int, y: int, is_eraser: bool):
-        """
-        FASE 1 — chamada a cada evento de mouse move.
-        100% numpy/CPU. Sem tensores, sem GPU, sem one-hot.
-        Meta: < 5ms por chamada em 1080p.
-        """
-        if self.curr_mask is None:
-            return
-
-        ix, iy = int(x), int(y)
-        radius = self.brush_size
-
-        # Aplica o círculo diretamente na máscara numpy
-        if is_eraser:
-            # cv2.circle com -1 (filled) é implementado em C++ — muito rápido
-            temp = np.zeros_like(self.curr_mask, dtype=np.uint8)
-            cv2.circle(temp, (ix, iy), radius, 1, -1)
-            self.curr_mask[(temp == 1) & (self.curr_mask == self.curr_object)] = 0
-        else:
-            cv2.circle(self.curr_mask, (ix, iy), radius, self.curr_object, -1)
-            # Nota: curr_object é o valor (ID do objeto) pintado diretamente
-
-        self.curr_frame_dirty = True
-
-        # Feedback visual: pinta diretamente no vis_image sem reconstruir nada
-        self._fast_vis_brush(ix, iy, radius, is_eraser)
-
-    def _fast_vis_brush(self, ix: int, iy: int, radius: int, is_eraser: bool):
-        if self.vis_image is None:
-            self.compose_current_im()
-
-        if is_eraser:
-            # Bounding box da região afetada
-            y1 = max(0, iy - radius)
-            y2 = min(self.h, iy + radius + 1)
-            x1 = max(0, ix - radius)
-            x2 = min(self.w, ix + radius + 1)
-
-            # Máscara circular dentro do bounding box (forma correta do pincel)
-            stroke_patch = np.zeros((y2 - y1, x2 - x1), dtype=np.uint8)
-            cv2.circle(stroke_patch, (ix - x1, iy - y1), radius, 1, -1)
-
-            # Máscara da região: só pixels do objeto atual E dentro do círculo
-            mask_patch = self.curr_mask[y1:y2, x1:x2]
-            # Após apply_brush, curr_mask já foi apagado nos pixels do obj atual,
-            # então usamos stroke_patch para identificar a região que FOI apagada
-            # (pixels que estavam no objeto atual antes do apagamento)
-            affected = (stroke_patch == 1)
-
-            # Restaura apenas os pixels afetados para a imagem original (sem overlay)
-            self.vis_image[y1:y2, x1:x2][affected] = self.curr_image_np[y1:y2, x1:x2][affected]
-
-            # Reaplicar cor dos outros objetos que existem nessa região (não afetados pela borracha)
-            # Isso preserva a visualização dos objetos vizinhos intacta
-            for obj_id in np.unique(mask_patch):
-                if obj_id == 0:
-                    continue  # fundo já está como curr_image_np
-                from cutie.utils.palette import davis_palette_np
-                r, g, b = davis_palette_np[obj_id % len(davis_palette_np)]
-                obj_pixels = (mask_patch == obj_id) & affected
-                if obj_pixels.any():
-                    self.vis_image[y1:y2, x1:x2][obj_pixels] = [int(r), int(g), int(b)]
-
-        else:
-            from cutie.utils.palette import davis_palette_np
-            palette_idx = self.curr_object % len(davis_palette_np)
-            r, g, b = davis_palette_np[palette_idx]
-            color = (int(r), int(g), int(b))
-            cv2.circle(self.vis_image, (ix, iy), radius, color, -1)
-
-        self.gui.set_canvas(self.vis_image)
-
-    def finish_brush_stroke(self):
-        # Garante que a imagem numpy está carregada antes de criar o tensor
-        if self.curr_image_np is None or self.curr_image_np.max() == 0:
-            self.curr_image_np = self.res_man.get_image(self.curr_ti)
-        
-        self.curr_image_torch = None  # força recarregamento
-        self.convert_current_image_mask_torch()
-        self.curr_prob = index_numpy_to_one_hot_torch(
-            self.curr_mask, self.num_objects + 1
-        ).to(self.device, non_blocking=True)
-        self.compose_current_im()
-        self.update_canvas()
-        self.save_current_mask()
-        self.curr_frame_dirty = False
 
     def on_init_frame_from_yolo(self):
         """
@@ -696,20 +399,18 @@ class MainController():
         self.remove_yolo_candidate(idx)
         
     def set_app_mode(self, mode: str):
-        if mode not in ['annotation', 'view', 'connection']:
+        if mode not in ['annotation', 'view']:
             return
-
+        
         self.app_mode = mode
         self.gui.text(f"Modo alterado para: {mode}")
-
-        if mode in ['view', 'connection']:
+        
+        # Se mudar para visualização, cancela interações pendentes
+        if mode == 'view':
             self.reset_this_interaction()
-
+            
+        # Atualiza a UI
         self.gui.toggle_mode_ui(mode)
-
-        if mode == 'connection':
-            self.gui.update_connections_ui(self.curr_object)
-            self._refresh_possible_connections_ui(self.curr_object)
 
     def set_selection_tool(self, tool: str):
         self.selection_tool = tool
@@ -908,10 +609,6 @@ class MainController():
         self.sam2_ctrl = RemoteSAMController(api_url="http://localhost:7263", device=self.device)
         self.click_ctrl = self.ritm_ctrl
 
-        print("Carregando Co-Tracker...")
-        self.cotracker = CoTrackerPredictor(checkpoint=None) # O checkpoint é baixado automaticamente no 1º uso
-        self.cotracker = self.cotracker.to(self.device)
-        self.cotracker.eval()
 
         ''' 
         #self.click_ctrl = ClickController(self.cfg.ritm_weights, device=self.device)
@@ -958,20 +655,14 @@ class MainController():
         self.gui.update_object_size(self.object_sizes.get(self.curr_object, ""))
         self.gui.update_object_reference(self.object_references.get(self.curr_object, False))
         self.gui.update_object_inverted(self.object_inverted.get(self.curr_object, False))
-        self.gui.update_connections_ui(number)
-        self._refresh_possible_connections_ui(number)
 
     def click_fn(self, action: Literal['left', 'right', 'middle', 'pick'], x: int, y: int):
         if self.propagating:
             return
 
-        if self.app_mode == 'connection':
-            self.on_connection_click(action, x, y)
-            return
-
         if self.app_mode == 'view':
             if action in ['left', 'right']:
-                self.gui.text("Edição bloqueada neste modo.")
+                self.gui.text("Edição bloqueada no Modo de Visualização.")
                 return
 
         if action == 'pick':
@@ -985,69 +676,9 @@ class MainController():
             self.hit_number_key(target_object)
             return
 
-        if action == 'track_negative':
-            # Armazena o vértice na cerca do objeto ATUALMENTE ativo.
-            # Estrutura por objeto garante isolamento total entre restrições.
-            if self.curr_object not in self.negative_anchors:
-                self.negative_anchors[self.curr_object] = []
-            self.negative_anchors[self.curr_object].append((self.curr_ti, x, y))
-            n = len(self.negative_anchors[self.curr_object])
-            self.gui.text(
-                f"Vértice {n} da cerca do Obj {self.curr_object} "
-                f"em ({int(x)}, {int(y)}) frame {self.curr_ti}."
-            )
-            # Redesenha imediatamente para mostrar o vértice e a polyline.
-            self.gui.main_canvas.update()
-            return
-            
         last_interaction = self.interaction
         new_interaction = None
 
-        with autocast(self.device, enabled=(self.amp and self.device == 'cuda')):
-            if action in ['left', 'right']:
-                self.convert_current_image_mask_torch()
-                image = self.curr_image_torch
-                
-                # Verifica se é a primeira vez que estamos clicando neste objeto
-                is_new_interaction = (last_interaction is None or last_interaction.tar_obj != self.curr_object)
-                
-                if is_new_interaction:
-                    self.complete_interaction()
-                    self.click_ctrl.unanchor()
-                    new_interaction = ClickInteraction(image, self.curr_prob, (self.h, self.w),
-                                                       self.click_ctrl, self.curr_object)
-                    self.interaction = new_interaction
-
-                # 1. Aplica o seu clique atual (ex: Botão Esquerdo no cano)
-                self.interaction.push_point(x, y, is_neg=(action == 'right'))
-                
-                # 2. INJEÇÃO INTELIGENTE: Passa os vértices da polyline deste
-                # objeto para o RITM como cliques negativos (hints de limite).
-                if is_new_interaction:
-                    anchors_for_obj = self.negative_anchors.get(self.curr_object, [])
-                    for (t, ax, ay) in anchors_for_obj:
-                        if t == self.curr_ti:
-                            self.interaction.push_point(ax, ay, is_neg=True)
-
-                self.interacted_prob = self.interaction.predict().to(self.device, non_blocking=True)
-                
-                # ==========================================================
-                # 3. BARREIRA GEOMÉTRICA (POLYLINE — CRITÉRIO DE ISOLAMENTO)
-                # Aplica apenas sobre o canal do objeto atual.
-                # Objetos adjacentes consolidados não são tocados.
-                # ==========================================================
-                self.interacted_prob = self._apply_polyline_barrier(
-                    self.interacted_prob,
-                    obj_id=self.curr_object,
-                    frame_idx=self.curr_ti,
-                    use_tracked=False  # Modo estático: usa âncoras do frame atual
-                )
-                # ==========================================================
-
-                self.update_interacted_mask()
-                self.update_gpu_gauges()
-
-        '''
         with autocast(self.device, enabled=(self.amp and self.device == 'cuda')):
             if action in ['left', 'right']:
                 # left: positive click
@@ -1065,28 +696,6 @@ class MainController():
 
                 self.interaction.push_point(x, y, is_neg=(action == 'right'))
                 self.interacted_prob = self.interaction.predict().to(self.device, non_blocking=True)
-
-                # ==========================================================
-                # NOVA BARREIRA FÍSICA IMEDIATA (FRAME ESTÁTICO)
-                # ==========================================================
-                if hasattr(self, 'negative_anchors') and self.negative_anchors:
-                    radius = 5 # Espessura do corte da barreira
-                    for anchor in self.negative_anchors:
-                        t, ax, ay = anchor
-                        if t == self.curr_ti: # Só aplica as barreiras deste frame
-                            ix, iy = int(ax), int(ay)
-                            if 0 <= ix < self.w and 0 <= iy < self.h:
-                                y_min = max(0, iy - radius)
-                                y_max = min(self.h, iy + radius)
-                                x_min = max(0, ix - radius)
-                                x_max = min(self.w, ix + radius)
-                                
-                                # Zera fisicamente a probabilidade da máscara passar por aqui
-                                self.interacted_prob[1:, y_min:y_max, x_min:x_max] = 0.0
-                                # Força esse pedaço a ser classificado como Fundo
-                                self.interacted_prob[0, y_min:y_max, x_min:x_max] = 1.0
-                # ==========================================================
-
                 self.update_interacted_mask()
                 self.update_gpu_gauges()
 
@@ -1102,7 +711,6 @@ class MainController():
                 return
             else:
                 raise NotImplementedError
-        '''
 
     def load_current_image_mask(self, no_mask: bool = False):
         self.curr_image_np = self.res_man.get_image(self.curr_ti)
@@ -1141,20 +749,7 @@ class MainController():
                                            self.overlay_layer, self.vis_target_objects)
 
     def update_canvas(self):
-        display = self.vis_image
-        if self.app_mode == 'connection' and self.curr_mask is not None:
-            connected_ids = [
-                c for c in self.object_connections.get(self.curr_object, [])
-                if isinstance(c, int)
-            ]
-            if connected_ids:
-                display = display.copy()
-                for peer_id in connected_ids:
-                    pixels = (self.curr_mask == peer_id)
-                    display[pixels] = np.clip(
-                        display[pixels].astype(int) + [60, 60, 0], 0, 255
-                    ).astype(np.uint8)
-        self.gui.set_canvas(display)
+        self.gui.set_canvas(self.vis_image)
 
     def update_current_image_fast(self, invalid_soft_mask: bool = False):
         # fast path, uses gpu. Changes the image in-place to avoid copying
@@ -1358,8 +953,6 @@ class MainController():
             dataset = PropagationReader(self.res_man, self.curr_ti, self.propagate_direction)
             loader = get_data_loader(dataset, self.cfg.num_read_workers)
 
-            self.compute_point_tracks()
-
             # --- LOOP DE PROPAGAÇÃO ---
             frame_count = 0
             for data in loader:
@@ -1379,22 +972,6 @@ class MainController():
                 self.curr_prob = self.processor.step(self.curr_image_torch)
                 
                 print(f"curr_prob.shape após step: {self.curr_prob.shape}")
-
-                # ==========================================================
-                # 2. IMPOSIÇÃO DA RESTRIÇÃO GEOMÉTRICA (POLYLINE — PROPAGAÇÃO)
-                # Aplica a barreira de TODOS os objetos que possuem cerca ativa,
-                # respeitando o isolamento: cada barreira só afeta seu próprio canal.
-                # Simetria garantida: funciona em forward E backward.
-                # ==========================================================
-                for obj_id in list(self.negative_anchors.keys()):
-                    if obj_id < self.curr_prob.shape[0]:
-                        self.curr_prob = self._apply_polyline_barrier(
-                            self.curr_prob,
-                            obj_id=obj_id,
-                            frame_idx=self.curr_ti,
-                            use_tracked=True  # Modo propagação: usa Co-Tracker
-                        )
-                # ==========================================================
 
                 # --- FIX 2, 3 e 4: PRESERVAÇÃO RÁPIDA DE MÁSCARAS (100% na GPU) ---
                 existing_mask_np = self.res_man.get_mask(self.curr_ti)
@@ -1761,59 +1338,6 @@ class MainController():
             self.gui.process_events()
     '''
 
-    def compute_point_tracks(self) -> None:
-        """
-        Executa o Co-Tracker para todos os objetos que possuem âncoras de contenção.
-        Cada objeto tem seus pontos rastreados de forma independente.
-        Resultados são armazenados em self.tracked_points e self.tracked_visibility
-        indexados pelo ID do objeto.
-        """
-        if not self.negative_anchors:
-            return
-
-        self.gui.text("Calculando rastreamento de pontos de contenção por objeto...")
-        self.gui.process_events()
-
-        # Carrega todos os frames uma única vez (evita I/O repetido por objeto).
-        video_frames: list[torch.Tensor] = []
-        for ti in range(self.length):
-            img_np = self.res_man.get_image(ti)
-            img_torch = torch.from_numpy(img_np).permute(2, 0, 1).float() / 255.0
-            video_frames.append(img_torch)
-        # Shape: [1, T, 3, H, W]
-        video_tensor = torch.stack(video_frames).unsqueeze(0).to(self.device)
-
-        self.tracked_points = {}
-        self.tracked_visibility = {}
-
-        for obj_id, anchors in self.negative_anchors.items():
-            if not anchors:
-                continue
-
-            # Monta queries no formato Co-Tracker: [B, N, 3] = (frame_idx, x, y)
-            queries_list = [[float(t), float(x), float(y)] for (t, x, y) in anchors]
-            queries_tensor = (
-                torch.tensor(queries_list, dtype=torch.float32)
-                .unsqueeze(0)
-                .to(self.device)
-            )
-
-            with torch.inference_mode():
-                pred_tracks, pred_visibility = self.cotracker(
-                    video=video_tensor,
-                    queries=queries_tensor
-                )
-
-            # Remove dimensão de batch: [T, N, 2] e [T, N]
-            self.tracked_points[obj_id] = pred_tracks.squeeze(0)
-            self.tracked_visibility[obj_id] = pred_visibility.squeeze(0)
-
-            self.gui.text(
-                f"  Obj {obj_id}: {len(anchors)} ponto(s) rastreado(s) com sucesso."
-            )
-
-        self.gui.text("Rastreamento concluído para todos os objetos.")
-
     def is_box_empty_in_mask(self, bbox, mask_np, threshold=0.1):
         """
         Verifica se a região da BBox está 'vazia' na máscara atual.
@@ -2089,22 +1613,6 @@ class MainController():
             log.error(f"Failed to remove object {object_id}: {e}")
             self.gui.progressbar_update(0)
     
-    def on_clear_polyline(self, obj_id: int | None = None) -> None:
-        """
-        Limpa todos os vértices da cerca de contenção de um objeto.
-        Se obj_id for None, usa o objeto atualmente ativo.
-        """
-        target = obj_id if obj_id is not None else self.curr_object
-
-        cleared_anchors = self.negative_anchors.pop(target, [])
-        self.tracked_points.pop(target, None)
-        self.tracked_visibility.pop(target, None)
-
-        n = len(cleared_anchors)
-        self.gui.text(f"Polyline do Obj {target} limpa ({n} vértice(s) removido(s)).")
-        self.gui.main_canvas.update()
-        self.save_polylines()
-
     def on_undo_delete(self):
         if self.last_deleted_info is None:
             self.gui.text("Nothing to undo.")
@@ -2360,171 +1868,6 @@ class MainController():
     def on_mouse_motion_xy(self, x, y):
         self.last_ex = x
         self.last_ey = y
-
-    def save_polylines(self) -> None:
-        """
-        Serializa self.negative_anchors para JSON no workspace.
-        Formato: { "obj_id": [[frame_idx, x, y], ...], ... }
-        """
-        polylines_path = path.join(self.cfg['workspace'], 'polylines.json')
-        try:
-            serializable = {
-                str(obj_id): [[t, float(x), float(y)] for (t, x, y) in anchors]
-                for obj_id, anchors in self.negative_anchors.items()
-            }
-            with open(polylines_path, 'w') as f:
-                json.dump(serializable, f, indent=4)
-        except Exception as e:
-            self.gui.text(f"Erro ao salvar polylines: {e}")
-
-
-    def on_add_connection(self, peer_id: int) -> None:
-        a, b = self.curr_object, peer_id
-        if b not in self.object_connections.get(a, []):
-            self.object_connections.setdefault(a, []).append(b)
-        if a not in self.object_connections.get(b, []):
-            self.object_connections.setdefault(b, []).append(a)
-        self.save_connections()
-        self.gui.update_connections_ui(a)
-
-    def on_remove_connection(self, peer_id: int) -> None:
-        a, b = self.curr_object, peer_id
-        if a in self.object_connections and b in self.object_connections[a]:
-            self.object_connections[a].remove(b)
-            if not self.object_connections[a]:
-                del self.object_connections[a]
-        if b in self.object_connections and a in self.object_connections[b]:
-            self.object_connections[b].remove(a)
-            if not self.object_connections[b]:
-                del self.object_connections[b]
-        self.save_connections()
-        self.gui.update_connections_ui(a)
-
-    def on_connection_click(self, action: str, x: float, y: float) -> None:
-        if self.curr_mask is None:
-            return
-
-        target = int(self.curr_mask[int(y), int(x)])
-
-        if action == 'pick':
-            if target == 0:
-                self.gui.text("Background clicado — nenhum objeto selecionado.")
-                return
-            self.gui.text(f"Objeto Base alterado para ID {target}.")
-            self.hit_number_key(target)
-
-        elif action == 'left':
-            if target == 0:
-                return
-            if target == self.curr_object:
-                return
-            self.on_add_connection(target)
-            self.show_current_frame()
-
-    def on_add_abstract_connection(self, kind: str) -> None:
-        self.object_connections.setdefault(self.curr_object, []).append(kind)
-        self.save_connections()
-        self.gui.update_connections_ui(self.curr_object)
-
-    def on_remove_abstract_connection(self, kind: str, occurrence_index: int) -> None:
-        conns = self.object_connections.get(self.curr_object, [])
-        occurrences = [(i, v) for i, v in enumerate(conns) if v == kind]
-        if occurrence_index < len(occurrences):
-            del conns[occurrences[occurrence_index][0]]
-            if not conns:
-                del self.object_connections[self.curr_object]
-        self.save_connections()
-        self.gui.update_connections_ui(self.curr_object)
-
-    def load_connections(self) -> None:
-        if path.exists(self.connections_file_path):
-            try:
-                with open(self.connections_file_path, 'r') as f:
-                    data = json.load(f)
-                self.object_connections = {int(k): v for k, v in data.items()}
-                log.info(f"Loaded connections from {self.connections_file_path}")
-            except Exception as e:
-                log.error(f"Failed to load connections: {e}")
-
-    def save_connections(self) -> None:
-        try:
-            with open(self.connections_file_path, 'w') as f:
-                json.dump({str(k): v for k, v in self.object_connections.items()}, f, indent=4)
-        except Exception as e:
-            self.gui.text(f"Error saving connections: {e}")
-
-    def load_possible_connections(self) -> None:
-        if path.exists(self.possible_connections_file_path):
-            try:
-                with open(self.possible_connections_file_path, 'r') as f:
-                    data = json.load(f)
-                self.object_possible_connections = {int(k): int(v) for k, v in data.items()}
-            except Exception as e:
-                log.error(f"Failed to load possible_connections: {e}")
-        else:
-            self.save_possible_connections()
-
-    def save_possible_connections(self) -> None:
-        try:
-            with open(self.possible_connections_file_path, 'w') as f:
-                json.dump({str(k): v for k, v in self.object_possible_connections.items()}, f, indent=4)
-        except Exception as e:
-            log.error(f"Failed to save possible_connections: {e}")
-
-    def on_possible_connections_changed(self, value: int) -> None:
-        if not self.object_references.get(self.curr_object, False):
-            return
-        self.object_possible_connections[self.curr_object] = value
-        self.save_possible_connections()
-
-    def _refresh_possible_connections_ui(self, obj_id: int) -> None:
-        is_ref = self.object_references.get(obj_id, False)
-        if is_ref:
-            value = self.object_possible_connections.get(obj_id, 0)
-        else:
-            ref_id = self._find_reference_for(obj_id)
-            value = self.object_possible_connections.get(ref_id, 0) if ref_id else 0
-        self.gui.update_possible_connections_ui(value, editable=is_ref)
-
-    def _find_reference_for(self, obj_id: int) -> Optional[int]:
-        label    = self.object_labels.get(obj_id, "")
-        model    = self.object_models.get(obj_id, "")
-        size     = self.object_sizes.get(obj_id, "")
-        inverted = self.object_inverted.get(obj_id, False)
-        all_ids = (set(self.object_labels) | set(self.object_models)
-                   | set(self.object_sizes) | set(self.object_inverted)
-                   | set(self.object_references))
-        for candidate in all_ids:
-            if candidate == obj_id:
-                continue
-            if not self.object_references.get(candidate, False):
-                continue
-            if (self.object_labels.get(candidate, "") == label
-                    and self.object_models.get(candidate, "") == model
-                    and self.object_sizes.get(candidate, "") == size
-                    and self.object_inverted.get(candidate, False) == inverted):
-                return candidate
-        return None
-
-    def load_polylines(self) -> None:
-        """
-        Carrega polylines do disco, restaurando o estado da sessão anterior.
-        Chamado no __init__, após a inicialização dos outros JSONs.
-        """
-        polylines_path = path.join(self.cfg['workspace'], 'polylines.json')
-        if not path.exists(polylines_path):
-            return
-        try:
-            with open(polylines_path, 'r') as f:
-                data = json.load(f)
-            self.negative_anchors = {
-                int(k): [(int(t), float(x), float(y)) for (t, x, y) in v]
-                for k, v in data.items()
-            }
-            total = sum(len(v) for v in self.negative_anchors.values())
-            log.info(f"Carregadas {total} âncoras de polyline de {polylines_path}")
-        except Exception as e:
-            log.error(f"Falha ao carregar polylines: {e}")
 
     @property
     def h(self) -> int:

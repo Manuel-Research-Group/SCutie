@@ -1,7 +1,8 @@
+SHELL := /bin/bash
 COLMAP_RECON_DIR = /home/newton/forks/Colmap/data/reconstructions
 WORKSPACES_ROOT = workspaces
 
-.PHONY: publish-workspace-to-colmap clone-workspace
+.PHONY: publish-workspace-to-colmap clone-workspace start
 
 publish-workspace-to-colmap:
 	@# 1. Validação de Argumentos
@@ -75,3 +76,28 @@ clone-workspace:
 	@echo "   📂 Destino: $(TARGET_DIR)"
 	@cp -r "$(SOURCE_DIR)" "$(TARGET_DIR)"
 	@echo "✅ Sucesso! Workspace clonado perfeitamente."
+
+start:
+	@# 1. Validação de Argumentos
+	@if [ -z "$(workspace)" ]; then \
+		echo "⚠️  Uso incorreto."; \
+		echo "   Execute: make start workspace=nome_do_workspace"; \
+		exit 1; \
+	fi
+
+	@# 2. Definição dos caminhos completos
+	$(eval TARGET_WORKSPACE := $(WORKSPACES_ROOT)/$(workspace))
+
+	@# 3. Verificação: A pasta de workspace existe?
+	@if [ ! -d "$(TARGET_WORKSPACE)" ]; then \
+		echo "❌ ERRO: O workspace não foi encontrado:"; \
+		echo "   -> $(TARGET_WORKSPACE)"; \
+		echo "   Verifique se o nome está correto dentro da pasta workspaces."; \
+		exit 1; \
+	fi
+
+	@# 4. Execução do Script
+	@echo "🚀 Iniciando o SCutie para o workspace '$(workspace)'..."
+	@eval "$$(conda shell.bash hook)" && \
+	conda activate cutie-with-point-negative-point-tracking && \
+	python3 interactive_demo.py --workspace workspaces/$(workspace)
