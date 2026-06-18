@@ -7,34 +7,37 @@ class ClickController:
     def __init__(self, checkpoint_path: str, device: str = 'cuda', max_size: int = 800):
         model = utils.load_is_model(checkpoint_path, device, cpu_dist_maps=True)
 
-        # Predictor params
-        zoomin_params = {
+        self.max_size = max_size
+        self.zoomin_params = {
             'skip_clicks': 1,
             'target_size': 480,
             'expansion_ratio': 1.4,
         }
+        self.fast_mode = False
 
-        predictor_params = {
-            'brs_mode': 'f-BRS-B',
-            # 'brs_mode': 'NoBRS',
-            'prob_thresh': 0.5,
-            'zoom_in_params': zoomin_params,
-            'predictor_params': {
-                'net_clicks_limit': 8,
-                'max_size': max_size,
-            },
-            'brs_opt_func_params': {
-                'min_iou_diff': 1e-3
-            },
-            'lbfgs_params': {
-                'maxfun': 20
-            },
-            'with_flip': True,
-        }
-
-        self.controller = InteractiveController(model, device, predictor_params)
+        self.controller = InteractiveController(model, device, self._build_predictor_params())
         self.anchored = False
         self.device = device
+
+    def _build_predictor_params(self):
+        return {
+            'brs_mode': 'NoBRS' if self.fast_mode else 'f-BRS-B',
+            'prob_thresh': 0.5,
+            'zoom_in_params': self.zoomin_params,
+            'predictor_params': {
+                'net_clicks_limit': 8,
+                'max_size': self.max_size,
+            },
+            'brs_opt_func_params': {'min_iou_diff': 1e-3},
+            'lbfgs_params': {'maxfun': 20},
+            'with_flip': not self.fast_mode,
+        }
+
+    def set_fast_mode(self, fast: bool):
+        if fast == self.fast_mode:
+            return
+        self.fast_mode = fast
+        self.controller.reset_predictor(self._build_predictor_params())
 
     def unanchor(self):
         self.anchored = False

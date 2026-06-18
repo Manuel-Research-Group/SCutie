@@ -894,6 +894,14 @@ class MainController():
         status = "Invertido" if is_inverted else "Normal"
         self.gui.text(f"Objeto {self.curr_object} definido como: {status}")
 
+    def on_fast_click_toggled(self, state):
+        is_fast = (state == 2)  # Qt.CheckState.Checked
+        if hasattr(self.click_ctrl, 'set_fast_mode'):
+            self.click_ctrl.set_fast_mode(is_fast)
+            self.gui.text(f"Modo rapido de clique {'ativado' if is_fast else 'desativado'}.")
+        else:
+            self.gui.text("Modo rapido nao e suportado pelo segmentador atual.")
+
     def initialize_networks(self) -> None:
         download_models_if_needed()
         self.cutie = CUTIE(self.cfg).eval().to(self.device)

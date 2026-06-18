@@ -1,9 +1,12 @@
+import logging
 import torch
 
 from typing import List
 from ...inference.clicker import Click
 from ...utils.misc import get_bbox_iou, get_bbox_from_mask, expand_bbox, clamp_bbox
 from .base import BaseTransform
+
+log = logging.getLogger()
 
 
 class ZoomIn(BaseTransform):
@@ -43,6 +46,23 @@ class ZoomIn(BaseTransform):
             if current_pred_mask.sum() > 0:
                 current_object_roi = get_object_roi(current_pred_mask, clicks_list,
                                                     self.expansion_ratio, self.min_crop_size)
+
+        if current_object_roi is not None:
+            image_area = image_nd.shape[2] * image_nd.shape[3]
+            new_area = _bbox_area(current_object_roi)
+
+            exploded = new_area > 0.70 * image_area
+            if exploded and self._object_roi is not None:
+                old_area = _bbox_area(self._object_roi)
+                exploded = exploded and (new_area > 3 * old_area)
+
+            if exploded:
+                log.warning(
+                    f"ZoomIn: ROI ignorado por explosao (nova area={new_area}px, "
+                    f"anterior={_bbox_area(self._object_roi) if self._object_roi else 'N/A'}px, "
+                    f"imagem={image_area}px). Mantendo ROI/crop anterior."
+                )
+                current_object_roi = self._object_roi  # pode ser None
 
         if current_object_roi is None:
             if self.skip_clicks >= 0:
@@ -126,6 +146,11 @@ class ZoomIn(BaseTransform):
             new_c = crop_width * (click.coords[1] - cmin) / (cmax - cmin + 1)
             transformed_clicks.append(click.copy(coords=(new_r, new_c)))
         return transformed_clicks
+
+
+def _bbox_area(bbox):
+    rmin, rmax, cmin, cmax = bbox
+    return max(0, rmax - rmin + 1) * max(0, cmax - cmin + 1)
 
 
 def get_object_roi(pred_mask, clicks_list, expansion_ratio, min_crop_size):

@@ -464,6 +464,14 @@ class GUI(QWidget):
         with open(Path(__file__).parent / 'TIPS.md', 'r') as f:
             self.tips.setMarkdown(f.read())
 
+        self.fast_click_checkbox = QCheckBox("Modo rapido (clique)")
+        self.fast_click_checkbox.setChecked(False)
+        self.fast_click_checkbox.setToolTip(
+            "Desativa f-BRS e flip horizontal no RITM para cliques mais "
+            "rapidos, com leve perda de precisao."
+        )
+        self.fast_click_checkbox.stateChanged.connect(controller.on_fast_click_toggled)
+
         navi = QHBoxLayout()
 
         apply_fixed_size_policy = lambda x: x.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed) if x else None
@@ -634,6 +642,7 @@ class GUI(QWidget):
         right_area = QVBoxLayout()
         right_area.setAlignment(Qt.AlignmentFlag.AlignBottom)
         right_area.addWidget(self.tips)
+        right_area.addWidget(self.fast_click_checkbox)
         # right_area.addStretch(1)
         # right_area.addLayout(self.brush_size_layout)
 
