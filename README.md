@@ -140,3 +140,9 @@ If you are running this on a remote server, X11 forwarding is possible. Start by
 - We used [ProPainter](https://github.com/sczhou/ProPainter) in our video inpainting demo.
 
 - Thanks to [RTIM](https://github.com/SamsungLabs/ritm_interactive_segmentation) and [XMem++](https://github.com/max810/XMem2) for making this possible.
+
+
+
+----
+
+make publish-workspace-to-colmap path=iph_solo_superior_ds15 name=iph_solo_superior_ds15_v

@@ -6,9 +6,8 @@ from omegaconf import DictConfig
 
 from PySide6.QtWidgets import (QWidget, QComboBox, QCheckBox, QHBoxLayout, QLabel, QPushButton,
                                QTextEdit, QSpinBox, QPlainTextEdit, QVBoxLayout, QSizePolicy,
-                               QButtonGroup, QSlider, QRadioButton, QApplication, QFileDialog,
-                               QLineEdit, QMenuBar, QMenu, QToolTip, QRubberBand, QGridLayout,
-                               QStackedWidget)
+                               QButtonGroup, QSlider, QRadioButton, QApplication, QFileDialog, 
+                               QLineEdit, QMenuBar, QMenu, QToolTip, QRubberBand, QGridLayout)
 from PySide6.QtGui import (QKeySequence, QShortcut, QTextCursor, QImage, QPixmap, QIcon, QAction, QActionGroup)
 from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QSize
 from PySide6.QtGui import QPainter, QPen, QColor
@@ -29,84 +28,36 @@ class OverlayCanvas(QLabel):
         # 1. Desenha a imagem (Pixmap) original
         super().paintEvent(event)
 
-        # Inicia o Painter logo no começo
+        # 2. Desenha as caixas do YOLO se houverem
+        if not self.controller.show_yolo_suggestions:
+            return
+
+        candidates = self.controller.get_current_yolo_candidates()
+        if not candidates:
+            return
+
         painter = QPainter(self)
         
-        # =========================================================
-        # 2. Desenha a polyline de contenção do objeto ATUALMENTE ATIVO.
-        # Apenas as restrições do curr_object são exibidas — feedback visual
-        # distinto por objeto (critério de UI/UX de isolamento).
-        # =========================================================
-        ctrl = self.controller
-        curr_obj = ctrl.curr_object
-        anchors_for_curr = ctrl.negative_anchors.get(curr_obj, [])
-
-        # Filtra apenas as âncoras do frame visível agora.
-        pts_this_frame: list[tuple[float, float]] = [
-            (x, y) for (t, x, y) in anchors_for_curr
-            if t == ctrl.curr_ti
-        ]
-
-        if pts_this_frame:
-            # --- Vértices: "X" vermelho sólido ---
-            pen_vertex = QPen(QColor(255, 60, 60), 2, Qt.PenStyle.SolidLine)
-            painter.setPen(pen_vertex)
-            s = 5  # Meia-largura do X
-
-            screen_pts: list[tuple[float, float]] = []
-            for (x, y) in pts_this_frame:
-                px, py = ctrl.gui.image_pos_to_pixel_pos(x, y)
-                screen_pts.append((px, py))
-                painter.drawLine(int(px - s), int(py - s), int(px + s), int(py + s))
-                painter.drawLine(int(px - s), int(py + s), int(px + s), int(py - s))
-
-            # --- Polyline: linha tracejada ciano conectando os vértices ---
-            if len(screen_pts) >= 2:
-                pen_line = QPen(QColor(0, 230, 255), 1, Qt.PenStyle.DashLine)
-                painter.setPen(pen_line)
-                for i in range(len(screen_pts) - 1):
-                    x1, y1 = screen_pts[i]
-                    x2, y2 = screen_pts[i + 1]
-                    painter.drawLine(int(x1), int(y1), int(x2), int(y2))
-
-                # Fecha visualmente o polígono se houver 3+ vértices
-                # (conecta o último vértice de volta ao primeiro)
-                if len(screen_pts) >= 3:
-                    x1, y1 = screen_pts[-1]
-                    x2, y2 = screen_pts[0]
-                    painter.drawLine(int(x1), int(y1), int(x2), int(y2))
-
-                
-
-        # =========================================================
-
-        # =========================================================
-        # 3. Desenha as caixas do YOLO se houverem
-        # =========================================================
-        if self.controller.show_yolo_suggestions:
-            candidates = self.controller.get_current_yolo_candidates()
-            if candidates: # Só desenha se a lista não estiver vazia
-                for i, box in enumerate(candidates):
-                    x1, y1, x2, y2 = box['bbox_xyxy']
-                    
-                    # Converter coordenadas da imagem real para coordenadas da tela (zoom/scale)
-                    sx1, sy1 = self.controller.gui.image_pos_to_pixel_pos(x1, y1)
-                    sx2, sy2 = self.controller.gui.image_pos_to_pixel_pos(x2, y2)
-                    
-                    w = sx2 - sx1
-                    h = sy2 - sy1
-                    
-                    if i == self.hovered_box_idx:
-                        painter.setPen(self.pen_hover)
-                    else:
-                        painter.setPen(self.pen_candidate)
-                        
-                    painter.drawRect(int(sx1), int(sy1), int(w), int(h))
-                    
-                    # Opcional: Desenhar o nome da classe
-                    painter.drawText(int(sx1), int(sy1) - 5, f"{box['class_name']} ({box['confidence']:.2f})")
+        for i, box in enumerate(candidates):
+            x1, y1, x2, y2 = box['bbox_xyxy']
             
-        # Finaliza os desenhos no canvas
+            # Converter coordenadas da imagem real para coordenadas da tela (zoom/scale)
+            sx1, sy1 = self.controller.gui.image_pos_to_pixel_pos(x1, y1)
+            sx2, sy2 = self.controller.gui.image_pos_to_pixel_pos(x2, y2)
+            
+            w = sx2 - sx1
+            h = sy2 - sy1
+            
+            if i == self.hovered_box_idx:
+                painter.setPen(self.pen_hover)
+            else:
+                painter.setPen(self.pen_candidate)
+                
+            painter.drawRect(int(sx1), int(sy1), int(w), int(h))
+            
+            # Opcional: Desenhar o nome da classe
+            painter.drawText(int(sx1), int(sy1) - 5, f"{box['class_name']} ({box['confidence']:.2f})")
+            
         painter.end()
 
     def mouseMoveEvent(self, event):
@@ -163,14 +114,6 @@ class GUI(QWidget):
         self.mode_action_group.addAction(self.act_view)
         self.mode_menu.addAction(self.act_view)
 
-        # Ação: Conexão
-        self.act_connection = QAction("Connection", self)
-        self.act_connection.setCheckable(True)
-        self.act_connection.setShortcut("Ctrl+3")
-        self.act_connection.triggered.connect(lambda: controller.set_app_mode('connection'))
-        self.mode_action_group.addAction(self.act_connection)
-        self.mode_menu.addAction(self.act_connection)
-
         self.selection_menu = self.menu_bar.addMenu("Seleção")
         self.selection_action_group = QActionGroup(self)
         self.selection_action_group.setExclusive(True)
@@ -192,44 +135,7 @@ class GUI(QWidget):
         self.selection_action_group.addAction(self.act_sel_bbox)
         self.selection_menu.addAction(self.act_sel_bbox)
 
-        # Ferramenta: Pincel
-        self.act_sel_brush = QAction("Pincel (+)", self)
-        self.act_sel_brush.setCheckable(True)
-        self.act_sel_brush.setShortcut("E") # Atalho
-        self.act_sel_brush.triggered.connect(lambda: controller.set_selection_tool('brush'))
-        self.selection_action_group.addAction(self.act_sel_brush)
-        self.selection_menu.addAction(self.act_sel_brush)
-
-        # Ferramenta: Borracha
-        self.act_sel_eraser = QAction("Borracha (-)", self)
-        self.act_sel_eraser.setCheckable(True)
-        self.act_sel_eraser.setShortcut("R") # Atalho
-        self.act_sel_eraser.triggered.connect(lambda: controller.set_selection_tool('eraser'))
-        self.selection_action_group.addAction(self.act_sel_eraser)
-        self.selection_menu.addAction(self.act_sel_eraser)
-
-        # Controle de tamanho do Pincel/Borracha
-        self.brush_size_dial, self.brush_size_layout = create_parameter_box(
-            1, 200, 'Tam. Pincel/Borracha:', step=1, callback=self.on_brush_size_change)
-        self.brush_size_dial.blockSignals(True)
-        self.brush_size_dial.setValue(10)
-        self.brush_size_dial.blockSignals(False)
-
-        QShortcut(QKeySequence(Qt.Key.Key_BracketLeft), self).activated.connect(
-            lambda: self._change_brush_size(-5))
-        QShortcut(QKeySequence(Qt.Key.Key_BracketRight), self).activated.connect(
-            lambda: self._change_brush_size(+5))
-        QShortcut(QKeySequence("Ctrl+Shift+X"), self).activated.connect(
-            controller.on_clear_polyline
-        )
-        QShortcut(QKeySequence(Qt.Key.Key_P), self).activated.connect(
-            controller.on_apply_polyline_to_current_frame
-        )
-        QShortcut(QKeySequence(Qt.Key.Key_O), self).activated.connect(
-            controller.on_apply_exclusion_polygon
-        )
-
-        # Menu YOLOp
+        # Menu YOLO
         self.menu_yolo = self.menu_bar.addMenu("YOLO")
         
         self.act_load_yolo = QAction("Load YOLO JSON...", self)
@@ -464,14 +370,6 @@ class GUI(QWidget):
         with open(Path(__file__).parent / 'TIPS.md', 'r') as f:
             self.tips.setMarkdown(f.read())
 
-        self.fast_click_checkbox = QCheckBox("Modo rapido (clique)")
-        self.fast_click_checkbox.setChecked(False)
-        self.fast_click_checkbox.setToolTip(
-            "Desativa f-BRS e flip horizontal no RITM para cliques mais "
-            "rapidos, com leve perda de precisao."
-        )
-        self.fast_click_checkbox.stateChanged.connect(controller.on_fast_click_toggled)
-
         navi = QHBoxLayout()
 
         apply_fixed_size_policy = lambda x: x.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed) if x else None
@@ -493,10 +391,6 @@ class GUI(QWidget):
         video_nav_layout.addSpacing(10)
         video_nav_layout.addWidget(self.reset_frame_button)
         video_nav_layout.addWidget(self.reset_object_button)
-
-        video_nav_layout.addSpacing(20)
-        #video_nav_layout.addLayout(self.brush_size_layout)
-
         video_nav_layout.addStretch(1) # Mantém tudo à esquerda
         
         # Linha 2 e 3: Propriedades do Objeto (Usando Grid para alinhar colunas)
@@ -529,19 +423,21 @@ class GUI(QWidget):
             if item: apply_fixed_size_policy(item)
 
         # ---------------------------------------------------------
-        # BLOCO 2 (MEIO): Visualização e Exportação + Conexões (QStackedWidget)
+        # BLOCO 2 (MEIO): Visualização e Exportação + Undo
         # ---------------------------------------------------------
+        overlay_subbox = QVBoxLayout()
+        
         overlay_topbox = QHBoxLayout()
         overlay_botbox = QHBoxLayout()
-
+        
         overlay_topbox.setAlignment(Qt.AlignmentFlag.AlignLeft)
         overlay_botbox.setAlignment(Qt.AlignmentFlag.AlignLeft)
-
+        
         overlay_topbox.addWidget(QLabel('Vis:'))
         overlay_topbox.addWidget(self.combo)
         overlay_topbox.addWidget(self.save_soft_mask_checkbox)
         overlay_topbox.addWidget(self.export_binary_button)
-
+        
         overlay_botbox.addWidget(QLabel('Save:'))
         overlay_botbox.addWidget(self.save_visualization_combo)
         overlay_botbox.addWidget(self.export_video_button)
@@ -549,68 +445,13 @@ class GUI(QWidget):
         overlay_botbox.addWidget(self.fps_dial)
         overlay_botbox.addWidget(QLabel('Mbps:'))
         overlay_botbox.addWidget(self.bitrate_dial)
-
+        
+        overlay_subbox.addLayout(overlay_topbox)
+        overlay_subbox.addLayout(overlay_botbox)
+        navi.addLayout(overlay_subbox)
+        
         apply_to_all_children_widget(overlay_topbox, apply_fixed_size_policy)
         apply_to_all_children_widget(overlay_botbox, apply_fixed_size_policy)
-
-        # Page 0: Vis/Export (existing)
-        overlay_page = QWidget()
-        overlay_page_layout = QVBoxLayout(overlay_page)
-        overlay_page_layout.setContentsMargins(0, 0, 0, 0)
-        overlay_page_layout.addLayout(overlay_topbox)
-        overlay_page_layout.addLayout(overlay_botbox)
-        overlay_page_layout.addStretch(1)
-
-        # Page 1: Connections
-        connections_page = QWidget()
-        connections_page_layout = QVBoxLayout(connections_page)
-        connections_page_layout.setContentsMargins(0, 0, 0, 0)
-
-        conn_top = QHBoxLayout()
-        self.conn_combo = QComboBox()
-        self.conn_add_button = QPushButton("Add")
-        self.conn_add_button.clicked.connect(self._on_add_connection_clicked)
-        conn_top.addWidget(self.conn_combo)
-        conn_top.addWidget(self.conn_add_button)
-
-        conn_abstract = QHBoxLayout()
-        self.conn_add_pipe_button = QPushButton("Add Pipe")
-        self.conn_add_pipe_button.clicked.connect(
-            lambda: controller.on_add_abstract_connection("pipe"))
-        self.conn_add_none_button = QPushButton("Add None")
-        self.conn_add_none_button.clicked.connect(
-            lambda: controller.on_add_abstract_connection("none"))
-        conn_abstract.addWidget(self.conn_add_pipe_button)
-        conn_abstract.addWidget(self.conn_add_none_button)
-        conn_abstract.addStretch(1)
-
-        self.conn_list_widget = QWidget()
-        self.conn_list_layout = QHBoxLayout(self.conn_list_widget)
-        self.conn_list_layout.setContentsMargins(0, 0, 0, 0)
-        self.conn_list_layout.addWidget(QLabel("Connections:"))
-
-        self.conn_max_spinbox = QSpinBox()
-        self.conn_max_spinbox.setMinimum(0)
-        self.conn_max_spinbox.setMaximum(4)
-        self.conn_max_spinbox.setFixedWidth(55)
-        self.conn_max_spinbox.valueChanged.connect(controller.on_possible_connections_changed)
-
-        connections_page_layout.addLayout(conn_top)
-        connections_page_layout.addLayout(conn_abstract)
-        connections_page_layout.addWidget(self.conn_list_widget)
-        conn_max_row = QHBoxLayout()
-        conn_max_row.addWidget(QLabel("Max conn:"))
-        conn_max_row.addWidget(self.conn_max_spinbox)
-        conn_max_row.addStretch(1)
-        connections_page_layout.addLayout(conn_max_row)
-        connections_page_layout.addStretch(1)
-
-        # Central stack
-        self.central_stack = QStackedWidget()
-        self.central_stack.addWidget(overlay_page)      # index 0
-        self.central_stack.addWidget(connections_page)  # index 1
-        self.central_stack.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        navi.addWidget(self.central_stack)
 
         navi.addSpacing(15)
 
@@ -642,9 +483,7 @@ class GUI(QWidget):
         right_area = QVBoxLayout()
         right_area.setAlignment(Qt.AlignmentFlag.AlignBottom)
         right_area.addWidget(self.tips)
-        right_area.addWidget(self.fast_click_checkbox)
         # right_area.addStretch(1)
-        # right_area.addLayout(self.brush_size_layout)
 
         # Parameters
         right_area.addLayout(self.perm_mem_gauge_layout)
@@ -665,11 +504,6 @@ class GUI(QWidget):
         import_area.addWidget(self.import_mask_button)
         import_area.addWidget(self.import_layer_button)
         right_area.addLayout(import_area)
-
-        brush_label_row = QHBoxLayout()
-        brush_label_row.addWidget(QLabel("🖌 Tam. Pincel / Borracha:"))
-        brush_label_row.addWidget(self.brush_size_dial)
-        right_area.addLayout(brush_label_row)
 
         # console
         right_area.addWidget(self.console)
@@ -729,19 +563,16 @@ class GUI(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_B), self).activated.connect(controller.on_backward_propagation)
 
         # quit shortcut
-        QShortcut(QKeySequence("Ctrl+Q"), self).activated.connect(self.close)
+        QShortcut(QKeySequence(Qt.Key.Key_Q), self).activated.connect(self.close)
 
-    def _change_brush_size(self, delta: int):
-        new_val = max(1, min(200, self.brush_size_dial.value() + delta))
-        self.brush_size_dial.blockSignals(True)
-        self.brush_size_dial.setValue(new_val)
-        self.brush_size_dial.blockSignals(False)
-        self.controller.brush_size = new_val
-        self.text(f"Pincel: {new_val}px")
 
     def toggle_mode_ui(self, mode: str):
+        """
+        Habilita ou desabilita widgets baseados no modo.
+        """
         is_annotation = (mode == 'annotation')
-
+        
+        # Lista de widgets que permitem edição/escrita
         widgets_to_toggle = [
             self.commit_button,
             self.init_frame_button,
@@ -766,70 +597,11 @@ class GUI(QWidget):
         for widget in widgets_to_toggle:
             widget.setEnabled(is_annotation)
 
-        if mode == 'annotation':
+        # Atualiza o check do menu visualmente caso a mudança venha de outro lugar
+        if is_annotation:
             self.act_annotation.setChecked(True)
-            self.central_stack.setCurrentIndex(0)
-        elif mode == 'view':
+        else:
             self.act_view.setChecked(True)
-            self.central_stack.setCurrentIndex(0)
-        elif mode == 'connection':
-            self.act_connection.setChecked(True)
-            self.central_stack.setCurrentIndex(1)
-
-    def _on_add_connection_clicked(self):
-        peer_id = self.conn_combo.currentData()
-        if peer_id is not None:
-            self.controller.on_add_connection(peer_id)
-
-    def update_connections_ui(self, obj_id: int):
-        self.conn_combo.blockSignals(True)
-        self.conn_combo.clear()
-        for i in range(1, self.controller.num_objects + 1):
-            if i == obj_id:
-                continue
-            label = self.controller.object_labels.get(i, "")
-            model = self.controller.object_models.get(i, "")
-            size = self.controller.object_sizes.get(i, "")
-            text = f"ID: {i}"
-            if label:
-                text += f" | {label}"
-            if model:
-                text += f" | {model}"
-            if size:
-                text += f" | {size}"
-            self.conn_combo.addItem(text, i)
-        self.conn_combo.blockSignals(False)
-
-        # Clear connection buttons (keep index 0: the "Connections:" label)
-        while self.conn_list_layout.count() > 1:
-            item = self.conn_list_layout.takeAt(1)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-
-        connections = self.controller.object_connections.get(obj_id, [])
-        abstract_counts: dict[str, int] = {}
-        for entry in connections:
-            if isinstance(entry, int):
-                btn = QPushButton(f"{entry} ×")
-                btn.clicked.connect(functools.partial(self.controller.on_remove_connection, entry))
-                self.conn_list_layout.addWidget(btn)
-            else:
-                occurrence = abstract_counts.get(entry, 0)
-                abstract_counts[entry] = occurrence + 1
-                btn = QPushButton(f"{entry} ×")
-                btn.clicked.connect(
-                    functools.partial(
-                        self.controller.on_remove_abstract_connection, entry, occurrence
-                    )
-                )
-                self.conn_list_layout.addWidget(btn)
-
-    def update_possible_connections_ui(self, value: int, editable: bool) -> None:
-        self.conn_max_spinbox.blockSignals(True)
-        self.conn_max_spinbox.setValue(value)
-        self.conn_max_spinbox.setEnabled(editable)
-        self.conn_max_spinbox.blockSignals(False)
 
     def image_pos_to_pixel_pos(self, x, y):
         # Convert image coordinates back to screen coordinates for drawing
@@ -850,10 +622,6 @@ class GUI(QWidget):
         y *= dominate_ratio
         
         return x, y
-
-    def on_brush_size_change(self):
-        self.controller.brush_size = self.brush_size_dial.value()
-        self.text(f"Tamanho do pincel alterado para: {self.controller.brush_size}")
 
     def resizeEvent(self, event):
         self.controller.show_current_frame()
@@ -977,14 +745,11 @@ class GUI(QWidget):
         # -------------------------------------------------------------------------
         # 1. DEBUG E VERIFICAÇÕES INICIAIS
         # -------------------------------------------------------------------------
-        if self.conn_combo.view().isVisible():
-            return
-
         btn_name = "Esquerdo" if event.button() == Qt.MouseButton.LeftButton else "Direito" if event.button() == Qt.MouseButton.RightButton else "Outro"
-        #self.text(f"--- DEBUG: Clique {btn_name} detectado em ({event.position().x():.1f}, {event.position().y():.1f}) ---")
+        self.text(f"--- DEBUG: Clique {btn_name} detectado em ({event.position().x():.1f}, {event.position().y():.1f}) ---")
 
         if self.is_pos_out_of_bound(event.position().x(), event.position().y()):
-            #self.text("DEBUG: Clique ignorado (Fora dos limites da imagem).")
+            self.text("DEBUG: Clique ignorado (Fora dos limites da imagem).")
             return
 
         # -------------------------------------------------------------------------
@@ -992,20 +757,10 @@ class GUI(QWidget):
         # -------------------------------------------------------------------------
         # Calculamos aqui para usar em todos os blocos abaixo
         ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
-        #self.text(f"DEBUG: Posição escalada na imagem: x={ex:.1f}, y={ey:.1f}")
+        self.text(f"DEBUG: Posição escalada na imagem: x={ex:.1f}, y={ey:.1f}")
 
         modifiers = QApplication.keyboardModifiers()
 
-        tool = self.controller.selection_tool
-        if tool in ['brush', 'eraser'] and self.controller.app_mode == 'annotation':
-            self.controller.is_drawing = True
-            is_eraser = (tool == 'eraser')
-            if event.button() == Qt.MouseButton.RightButton:
-                is_eraser = not is_eraser
-            # Guarda o estado da borracha para o on_mouse_motion não precisar recalcular
-            self._current_stroke_is_eraser = is_eraser
-            self.controller.apply_brush(ex, ey, is_eraser)
-            return
         # -------------------------------------------------------------------------
         # 3. LÓGICA YOLO (Prioridade Alta - Overlay)
         # -------------------------------------------------------------------------
@@ -1061,13 +816,8 @@ class GUI(QWidget):
         # -------------------------------------------------------------------------
         action = None
 
-        # Shift + Clique Direito = Track Negative (Âncora de Fundo)
-        if (modifiers == Qt.KeyboardModifier.ShiftModifier and event.button() == Qt.MouseButton.RightButton):
-            action = 'track_negative'
-            self.text("DEBUG: Ação definida: TRACK NEGATIVE (Âncora de Fundo)")
-
         # Ctrl + Clique Esquerdo = Pick (Selecionar objeto clicado)
-        elif (modifiers == Qt.KeyboardModifier.ControlModifier and 
+        if (modifiers == Qt.KeyboardModifier.ControlModifier and 
             event.button() == Qt.MouseButton.LeftButton):
             action = 'pick'
             self.text("DEBUG: Ação definida: PICK")
@@ -1102,13 +852,6 @@ class GUI(QWidget):
 
         ex, ey = self.get_scaled_pos(event.position().x(), event.position().y())
         
-        tool = self.controller.selection_tool
-        if tool in ['brush', 'eraser'] and getattr(self.controller, 'is_drawing', False):
-            # Usa o flag salvo no press — evita recalcular modifier + botão a cada pixel
-            is_eraser = getattr(self, '_current_stroke_is_eraser', tool == 'eraser')
-            self.controller.apply_brush(ex, ey, is_eraser)
-            return
-
         # Se estiver em modo de visualização, mostra tooltip
         if self.controller.app_mode == 'view':
             info_text = self.controller.get_object_info_at(ex, ey)
@@ -1123,13 +866,6 @@ class GUI(QWidget):
             self.on_mouse_motion_xy(ex, ey)
 
     def on_mouse_release(self, event):
-        if getattr(self.controller, 'is_drawing', False):
-            self.controller.is_drawing = False
-            # Uma única sincronização GPU ao terminar o traço
-            self.controller.finish_brush_stroke()
-            self.text("Traço finalizado e salvo.")
-            return
-
         # Finaliza o desenho da BBox
         if not self.rubber_band.isHidden():
             self.rubber_band.hide()
