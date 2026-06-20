@@ -1302,6 +1302,7 @@ class MainController():
 
     def on_pause(self):
         self.propagating = False
+        self.single_object_propagation = None
         self.gui.text(f'Propagation stopped at t={self.curr_ti}.')
         self.gui.pause_propagation()
     
@@ -1427,41 +1428,62 @@ class MainController():
                         )
                 # ==========================================================
 
-                # --- FIX 2, 3 e 4: PRESERVAÇÃO RÁPIDA DE MÁSCARAS (100% na GPU) ---
-                existing_mask_np = self.res_man.get_mask(self.curr_ti)
-                if existing_mask_np is not None:
-                    # Traz para a GPU como LongTensor para indexação correta
-                    existing_mask_t = torch.from_numpy(existing_mask_np).to(self.device, dtype=torch.long)
-                    
-                    # FIX 3: Usa argmax para não alocar o tensor de 'values' (mais limpo e eficiente)
-                    propagated_mask_t = torch.argmax(self.curr_prob, dim=0)
-                    final_mask_t = propagated_mask_t.clone()
-                    
-                    # FIX 1 (Uso da LUT): O(1) Lookup instantâneo
-                    is_active_mask = self.is_active_lut[existing_mask_t] 
-                    
-                    # Regra 1: restaurar objetos do futuro (que não estão na LUT)
-                    untracked_mask = (existing_mask_t > 0) & (~is_active_mask)
-                    final_mask_t[untracked_mask] = existing_mask_t[untracked_mask]
-                    
-                    # Regra 2: proteger objetos consolidados de serem sobrescritos
-                    conflict_mask = (existing_mask_t > 0) & (final_mask_t > 0) & (existing_mask_t != final_mask_t)
-                    final_mask_t[conflict_mask] = existing_mask_t[conflict_mask]
-                    
-                    # Atualiza curr_prob SEM chamar processor.step() novamente (FIX 2)
-                    if untracked_mask.any() or conflict_mask.any():
-                        
-                        # FIX 4: 100% GPU-native One-Hot Encoding
-                        # Evita round-trip para CPU e substitui o index_numpy_to_one_hot_torch original
+                # --- MASK PRESERVATION ---
+                if self.single_object_propagation is not None:
+                    # Single-object mode: keep only the selected object's channel from CUTIE
+                    sel_id = self.single_object_propagation
+                    propagated_channel = self.curr_prob[sel_id].clone()
+
+                    # Load existing mask from disk
+                    existing_mask_np = self.res_man.get_mask(self.curr_ti)
+
+                    if existing_mask_np is not None:
+                        # Rebuild curr_prob from disk mask (preserves all other objects)
+                        existing_mask_t = torch.from_numpy(existing_mask_np).to(self.device, dtype=torch.long)
                         self.curr_prob = torch.nn.functional.one_hot(
-                            final_mask_t, num_classes=self.num_objects + 1
+                            existing_mask_t, num_classes=self.num_objects + 1
                         ).permute(2, 0, 1).float()
+
+                        # Collision protection: zero out pixels where other objects exist
+                        other_objects_mask = (existing_mask_t > 0) & (existing_mask_t != sel_id)
+                        propagated_channel[other_objects_mask] = 0.0
+                    else:
+                        # No existing mask: start from empty (background only)
+                        self.curr_prob = torch.zeros(
+                            (self.num_objects + 1, self.h, self.w),
+                            dtype=torch.float, device=self.device
+                        )
+                        self.curr_prob[0] = 1.0  # background
+
+                    # Overwrite only the selected object's channel
+                    self.curr_prob[sel_id] = propagated_channel
+
+                else:
+                    # Normal multi-object mode: existing preservation logic
+                    existing_mask_np = self.res_man.get_mask(self.curr_ti)
+                    if existing_mask_np is not None:
+                        existing_mask_t = torch.from_numpy(existing_mask_np).to(self.device, dtype=torch.long)
+                        propagated_mask_t = torch.argmax(self.curr_prob, dim=0)
+                        final_mask_t = propagated_mask_t.clone()
+
+                        is_active_mask = self.is_active_lut[existing_mask_t]
+
+                        untracked_mask = (existing_mask_t > 0) & (~is_active_mask)
+                        final_mask_t[untracked_mask] = existing_mask_t[untracked_mask]
+
+                        conflict_mask = (existing_mask_t > 0) & (final_mask_t > 0) & (existing_mask_t != final_mask_t)
+                        final_mask_t[conflict_mask] = existing_mask_t[conflict_mask]
+
+                        if untracked_mask.any() or conflict_mask.any():
+                            self.curr_prob = torch.nn.functional.one_hot(
+                                final_mask_t, num_classes=self.num_objects + 1
+                            ).permute(2, 0, 1).float()
 
                 # Mantém o array numpy atualizado para as funções de visualização da UI
                 self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
 
-                # --- FISCAL YOLO ---
-                yolo_candidates = self.yolo_data.get(self.curr_ti, [])
+                # --- FISCAL YOLO (disabled during single-object propagation) ---
+                yolo_candidates = self.yolo_data.get(self.curr_ti, []) if self.single_object_propagation is None else []
                 stop_propagation = False
                 if yolo_candidates:
                     high_conf_candidates = [c for c in yolo_candidates if c['confidence'] > 0.8]
@@ -1545,10 +1567,13 @@ class MainController():
                     break
 
             print(f"=== DEBUG: Fim on_propagate ===\n")
-            
+
+            if self.single_object_propagation is not None:
+                self.gui.text(f'Single-object propagation completed at t={self.curr_ti}.')
+
             # Atualiza o rastreamento para próxima propagação
             self._last_propagation_num_objects = self.num_objects
-            
+            self.single_object_propagation = None
             self.propagating = False
             self.curr_frame_dirty = False
             self.on_pause()
