@@ -252,9 +252,15 @@ class GUI(QWidget):
         self.commit_button = QPushButton('Commit to permanent memory')
         self.commit_button.clicked.connect(controller.on_commit)
 
+        # TODO: Decide whether Auto-Init Frame (YOLO) is dead code or future work
         self.init_frame_button = QPushButton('Auto-Init Frame (YOLO)')
         self.init_frame_button.clicked.connect(controller.on_init_frame_from_yolo)
         self.init_frame_button.setToolTip("Gera máscaras automaticamente para todas as detecções YOLO neste frame")
+        self.init_frame_button.setVisible(False)
+
+        self.propagate_forward_selected_button = QPushButton('Propagate Forward Selected')
+        self.propagate_forward_selected_button.clicked.connect(controller.on_propagate_forward_selected)
+        self.propagate_forward_selected_button.setToolTip("Propagate forward only the selected object's mask")
 
         self.export_video_button = QPushButton('Export as video')
         self.export_video_button.clicked.connect(controller.on_export_visualization)
@@ -622,7 +628,7 @@ class GUI(QWidget):
         control_botbox = QHBoxLayout()
         
         control_topbox.addWidget(self.commit_button)
-        control_topbox.addWidget(self.init_frame_button)
+        control_topbox.addWidget(self.propagate_forward_selected_button)
         control_topbox.addWidget(self.forward_run_button)
         control_topbox.addWidget(self.backward_run_button)
         
@@ -954,11 +960,13 @@ class GUI(QWidget):
         self.backward_run_button.setEnabled(False)
         self.lcd.setReadOnly(True)
         self.forward_run_button.setText('Pause propagation')
+        self.propagate_forward_selected_button.setEnabled(False)
 
     def backward_propagation_start(self):
         self.forward_run_button.setEnabled(False)
         self.lcd.setReadOnly(True)
         self.backward_run_button.setText('Pause propagation')
+        self.propagate_forward_selected_button.setEnabled(False)
 
     def pause_propagation(self):
         self.forward_run_button.setEnabled(True)
@@ -969,6 +977,10 @@ class GUI(QWidget):
         self.forward_run_button.setText('Propagate forward')
         self.backward_run_button.setText('propagate backward')
         self.tl_slider.setEnabled(True)
+        self.propagate_forward_selected_button.setEnabled(True)
+
+    def update_propagate_selected_state(self, enabled: bool):
+        self.propagate_forward_selected_button.setEnabled(enabled)
 
     def process_events(self):
         QApplication.processEvents()
