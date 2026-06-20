@@ -140,7 +140,13 @@ class GUI(QWidget):
         self.setWindowIcon(QIcon('docs/icon.png'))
 
         self.menu_bar = QMenuBar(self)
-        
+
+        self.menu_workspace = self.menu_bar.addMenu("Workspace")
+
+        self.act_configure_scale = QAction("Configurar Escala...", self)
+        self.act_configure_scale.triggered.connect(controller.on_configure_scale)
+        self.menu_workspace.addAction(self.act_configure_scale)
+
         # Menu de Modos
         self.mode_menu = self.menu_bar.addMenu("Mode")
         self.mode_action_group = QActionGroup(self)
