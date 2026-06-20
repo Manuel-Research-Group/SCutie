@@ -10,9 +10,8 @@ from PySide6.QtWidgets import (QWidget, QComboBox, QCheckBox, QHBoxLayout, QLabe
                                QLineEdit, QMenuBar, QMenu, QToolTip, QRubberBand, QGridLayout,
                                QStackedWidget, QDialog, QDialogButtonBox, QFormLayout)
 from PySide6.QtGui import (QKeySequence, QShortcut, QTextCursor, QImage, QPixmap, QIcon, QAction, QActionGroup,
-                            QRegularExpressionValidator)
+                            QRegularExpressionValidator, QPainter, QPen, QColor)
 from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QSize, QRegularExpression
-from PySide6.QtGui import QPainter, QPen, QColor
 
 from cutie.utils.palette import davis_palette_np
 from gui.gui_utils import *
