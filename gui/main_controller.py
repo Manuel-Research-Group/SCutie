@@ -111,6 +111,9 @@ class MainController():
         self.num_objects = cfg['num_objects'] # Re-set num_objects after potential update
         self.gui = GUI(self, self.cfg)
 
+        if self.scale_factor is None:
+            self.on_configure_scale()
+
         # initialize control info
         self.length: int = self.res_man.length
         self.interaction: Interaction = None
