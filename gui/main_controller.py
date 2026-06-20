@@ -117,6 +117,7 @@ class MainController():
         self.last_deleted_info: Dict = None
         self.curr_ti: int = 0
         self.curr_object: int = 1
+        self.single_object_propagation: Optional[int] = None
         self.propagating: bool = False
         self.propagate_direction: Literal['forward', 'backward', 'none'] = 'none'
         self.last_ex = self.last_ey = 0
@@ -968,6 +969,7 @@ class MainController():
         self.gui.update_object_inverted(self.object_inverted.get(self.curr_object, False))
         self.gui.update_connections_ui(number)
         self._refresh_possible_connections_ui(number)
+        self.gui.update_propagate_selected_state(number > 0)
 
     def click_fn(self, action: Literal['left', 'right', 'middle', 'pick'], x: int, y: int):
         if self.propagating:
@@ -1276,6 +1278,27 @@ class MainController():
             self.gui.backward_propagation_start()
             self.propagate_direction = 'backward'
             self.on_propagate()
+
+    def on_propagate_forward_selected(self):
+        if self.propagating:
+            self.propagating = False
+            self.propagate_direction = 'none'
+            return
+
+        if self.curr_object <= 0:
+            self.gui.text('No object selected.')
+            return
+
+        if not np.any(self.curr_mask == self.curr_object):
+            self.gui.text(f'Selected object {self.curr_object} has no mask in current frame.')
+            return
+
+        self.single_object_propagation = self.curr_object
+        self.propagate_fn = self.on_next_frame
+        self.gui.forward_propagation_start()
+        self.propagate_direction = 'forward'
+        self.gui.text(f'Propagating object {self.curr_object} forward from t={self.curr_ti}.')
+        self.on_propagate()
 
     def on_pause(self):
         self.propagating = False
