@@ -25,6 +25,14 @@ publish-workspace-to-colmap:
 		exit 1; \
 	fi
 
+	@# 3.5. Verificação: A escala foi configurada?
+	@if [ ! -f "$(SOURCE_DIR)/workspace_config.json" ]; then \
+		echo "❌ ERRO: Escala não definida."; \
+		echo "   Configure a escala no SCutie antes de publicar."; \
+		echo "   (Menu: Workspace > Configurar Escala...)"; \
+		exit 1; \
+	fi
+
 	@# 4. Verificação: O destino já existe? (Proteção contra overwrite)
 	@if [ -d "$(TARGET_DIR)" ]; then \
 		echo "❌ ERRO: Já existe um projeto com esse nome no destino:"; \
