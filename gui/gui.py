@@ -8,9 +8,10 @@ from PySide6.QtWidgets import (QWidget, QComboBox, QCheckBox, QHBoxLayout, QLabe
                                QTextEdit, QSpinBox, QPlainTextEdit, QVBoxLayout, QSizePolicy,
                                QButtonGroup, QSlider, QRadioButton, QApplication, QFileDialog,
                                QLineEdit, QMenuBar, QMenu, QToolTip, QRubberBand, QGridLayout,
-                               QStackedWidget)
-from PySide6.QtGui import (QKeySequence, QShortcut, QTextCursor, QImage, QPixmap, QIcon, QAction, QActionGroup)
-from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QSize
+                               QStackedWidget, QDialog, QDialogButtonBox, QFormLayout)
+from PySide6.QtGui import (QKeySequence, QShortcut, QTextCursor, QImage, QPixmap, QIcon, QAction, QActionGroup,
+                            QRegularExpressionValidator)
+from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QSize, QRegularExpression
 from PySide6.QtGui import QPainter, QPen, QColor
 
 from cutie.utils.palette import davis_palette_np
@@ -1182,3 +1183,54 @@ class GUI(QWidget):
     def progressbar_update(self, progress: float):
         self.progressbar.setValue(int(progress * 100))
         self.process_events()
+
+    def open_scale_dialog(self, current_value: float = None) -> float:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Configurar Escala do Workspace")
+
+        layout = QVBoxLayout(dialog)
+
+        label = QLabel("A escala deste workspace ainda não foi definida.\n"
+                       "Informe o fator de escala em milímetros.")
+        layout.addWidget(label)
+
+        form = QFormLayout()
+        scale_input = QLineEdit()
+        scale_input.setPlaceholderText("0.00")
+
+        validator = QRegularExpressionValidator(QRegularExpression(r"\d+\.\d{1,2}"))
+        scale_input.setValidator(validator)
+
+        display_value = f"{current_value:.2f}" if current_value is not None else "1.00"
+        scale_input.setText(display_value)
+
+        form.addRow("Escala (mm):", scale_input)
+        layout.addLayout(form)
+
+        error_label = QLabel("")
+        error_label.setStyleSheet("color: red;")
+        layout.addWidget(error_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        layout.addWidget(buttons)
+
+        buttons.rejected.connect(dialog.reject)
+
+        def on_save():
+            text = scale_input.text().strip()
+            try:
+                value = float(text)
+            except ValueError:
+                error_label.setText("Formato inválido. Use o formato: 123.45")
+                return
+            if value <= 0:
+                error_label.setText("A escala deve ser maior que zero.")
+                return
+            dialog.done(1)
+
+        buttons.accepted.connect(on_save)
+
+        result = dialog.exec()
+        if result == 1:
+            return float(scale_input.text().strip())
+        return None

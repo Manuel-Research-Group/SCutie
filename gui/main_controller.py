@@ -803,6 +803,12 @@ class MainController():
         except Exception as e:
             self.gui.text(f"Error saving workspace config: {e}")
 
+    def on_configure_scale(self):
+        value = self.gui.open_scale_dialog(self.scale_factor)
+        if value is not None:
+            self.save_workspace_config(value)
+            self.gui.text(f"Escala configurada: {value} mm")
+
     def on_size_changed(self):
         new_size = self.gui.object_size_edit.text().strip()
         
