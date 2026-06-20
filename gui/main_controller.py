@@ -36,6 +36,7 @@ from cotracker.predictor import CoTrackerPredictor
 
 import shutil
 from PySide6.QtWidgets import QMessageBox
+from PySide6.QtCore import QTimer
 
 log = logging.getLogger()
 
@@ -111,9 +112,6 @@ class MainController():
         self.num_objects = cfg['num_objects'] # Re-set num_objects after potential update
         self.gui = GUI(self, self.cfg)
 
-        if self.scale_factor is None:
-            self.on_configure_scale()
-
         # initialize control info
         self.length: int = self.res_man.length
         self.interaction: Interaction = None
@@ -184,6 +182,9 @@ class MainController():
         self.gui.showMaximized()
         self.gui.text('Initialized.')
         self.initialized = True
+
+        if self.scale_factor is None:
+            QTimer.singleShot(0, self.on_configure_scale)
 
         # try to load the default overlay
         self._try_load_layer('./docs/uiuc.png')
