@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-COLMAP_RECON_DIR = /home/newton/forks/Colmap/data/reconstructions
+COLMAP_RECON_DIR = /home/newton/forks/Colmap/workspaces
 WORKSPACES_ROOT = workspaces
 
 .PHONY: publish-workspace-to-colmap clone-workspace start
