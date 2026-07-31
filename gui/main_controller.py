@@ -309,7 +309,7 @@ class MainController():
         pts = [(int(x), int(y)) for (t, x, y) in anchors if t == self.curr_ti]
 
         if len(pts) < 3:
-            self.gui.text("Polígono de exclusão requer ao menos 3 vértices.")
+            self.gui.text("Exclusion polygon requires at least 3 vertices.")
             return
 
         # Rasteriza o polígono preenchido — cv2.fillPoly fecha automaticamente
@@ -328,8 +328,8 @@ class MainController():
         self.save_current_mask()
         self.show_current_frame()
         self.gui.text(
-            f"Polígono de exclusão aplicado: Obj {obj_id}, "
-            f"{len(pts)} vértices, frame {self.curr_ti}."
+            f"Exclusion polygon applied: Obj {obj_id}, "
+            f"{len(pts)} vertices, frame {self.curr_ti}."
         )
 
     def on_apply_polyline_to_current_frame(self) -> None:
@@ -353,7 +353,7 @@ class MainController():
         self.show_current_frame()
         self.curr_frame_dirty = False
         self.gui.text(
-            f"Polyline aplicada ao frame {self.curr_ti}, Obj {self.curr_object}."
+            f"Polyline applied to frame {self.curr_ti}, Obj {self.curr_object}."
         )
 
     def on_load_yolo_json(self):
@@ -380,11 +380,11 @@ class MainController():
                     self.yolo_data[idx] = detections
                     loaded_count += len(detections)
             
-            self.gui.text(f"Carregadas {loaded_count} detecções em {len(self.yolo_data)} frames.")
+            self.gui.text(f"Loaded {loaded_count} detections in {len(self.yolo_data)} frames.")
             self.show_current_frame() # Repaint
             
         except Exception as e:
-            self.gui.text(f"Erro ao carregar JSON: {e}")
+            self.gui.text(f"Error loading JSON: {e}")
 
     '''
     def apply_brush(self, x: int, y: int, is_eraser: bool):
@@ -512,8 +512,8 @@ class MainController():
         candidates = self.get_current_yolo_candidates()
         
         if not candidates:
-            self.gui.text(f"Nenhuma detecção YOLO carregada para o frame {self.curr_ti}.")
-            self.gui.text("Dica: Carregue o JSON em 'YOLO -> Load YOLO JSON' primeiro.")
+            self.gui.text(f"No YOLO detection loaded for frame {self.curr_ti}.")
+            self.gui.text("Tip: Load the JSON via 'YOLO -> Load YOLO JSON' first.")
             return
 
         # 2. Configuração de Limiares
@@ -525,10 +525,10 @@ class MainController():
         valid_candidates.sort(key=lambda x: x['confidence'], reverse=True)
         
         if not valid_candidates:
-            self.gui.text(f"Existem detecções, mas nenhuma com confiança > {CONFIDENCE_THRESHOLD}.")
+            self.gui.text(f"Detections exist, but none with confidence > {CONFIDENCE_THRESHOLD}.")
             return
 
-        self.gui.text(f"Auto-Init: Processando {len(valid_candidates)} objetos...")
+        self.gui.text(f"Auto-Init: Processing {len(valid_candidates)} objects...")
         self.gui.process_events()
 
         # 3. Preparar o Canvas Temporário
@@ -556,7 +556,7 @@ class MainController():
             # Isso economiza tempo de rede se o objeto já estiver segmentado
             # Mas como é só bbox, o cálculo de IoU aqui seria impreciso, melhor deixar a máscara decidir.
 
-            self.gui.text(f" -> SAM 2 gerando: {class_name} ({i+1}/{len(valid_candidates)})...")
+            self.gui.text(f" -> SAM 2 generating: {class_name} ({i+1}/{len(valid_candidates)})...")
             self.gui.process_events()
 
             # Chama a API do SAM 2 (usando seu controlador remoto existente)
@@ -615,12 +615,12 @@ class MainController():
             self.save_current_mask() # Salva o PNG no disco
             self.show_current_frame() # Atualiza a tela
             
-            self.gui.text(f"Sucesso! {added_count} objetos inicializados no Frame {self.curr_ti}.")
+            self.gui.text(f"Success! {added_count} objects initialized on Frame {self.curr_ti}.")
             
             # Muda o foco para o último objeto criado para facilitar edição
             self.hit_number_key(next_obj_id - 1)
         else:
-            self.gui.text("Processo finalizado, mas nenhum objeto novo foi adicionado (sobreposição ou falha na API).")
+            self.gui.text("Process finished, but no new object was added (overlap or API failure).")
 
     def on_toggle_yolo(self, checked):
         self.show_yolo_suggestions = checked
@@ -695,9 +695,9 @@ class MainController():
                 self.interacted_prob = aggregate_wbg(prob_map[1:], keep_bg=True, hard=True)
                 
                 self.update_interacted_mask()
-                self.gui.text(f"Máscara SAM 2 recebida para objeto {curr_id}.")
+                self.gui.text(f"SAM 2 mask received for object {curr_id}.")
             else:
-                self.gui.text("Erro ao obter máscara do SAM 2.")
+                self.gui.text("Error getting mask from SAM 2.")
                 
         else:
             self.on_bbox_complete(x1, y1, x2, y2)
@@ -709,7 +709,7 @@ class MainController():
             return
 
         self.app_mode = mode
-        self.gui.text(f"Modo alterado para: {mode}")
+        self.gui.text(f"Mode changed to: {mode}")
 
         if mode in ['view', 'connection']:
             self.reset_this_interaction()
@@ -722,7 +722,7 @@ class MainController():
 
     def set_selection_tool(self, tool: str):
         self.selection_tool = tool
-        self.gui.text(f"Ferramenta de seleção: {tool}")
+        self.gui.text(f"Selection tool: {tool}")
 
     def on_bbox_complete(self, x1, y1, x2, y2):
         """
@@ -737,7 +737,7 @@ class MainController():
         center_x = (x1 + x2) / 2
         center_y = (y1 + y2) / 2
 
-        self.gui.text(f"Bounding Box detectada: Centro ({center_x:.1f}, {center_y:.1f})")
+        self.gui.text(f"Bounding Box detected: Center ({center_x:.1f}, {center_y:.1f})")
 
         # Envia como um clique esquerdo (positivo)
         # Reutiliza a lógica existente de clique
@@ -811,7 +811,7 @@ class MainController():
         value = self.gui.open_scale_dialog(self.scale_factor)
         if value is not None:
             self.save_workspace_config(value)
-            self.gui.text(f"Escala configurada: {value} mm")
+            self.gui.text(f"Scale configured: {value} mm")
 
     def on_size_changed(self):
         new_size = self.gui.object_size_edit.text().strip()
@@ -899,8 +899,8 @@ class MainController():
         is_ref = (state == 2) # Qt.CheckState.Checked
         self.object_references[self.curr_object] = is_ref
         self.save_references()
-        status = "Referência" if is_ref else "Não é referência"
-        self.gui.text(f"Objeto {self.curr_object}: {status}")
+        status = "Reference" if is_ref else "Not a reference"
+        self.gui.text(f"Object {self.curr_object}: {status}")
 
     def load_inverted(self):
         if path.exists(self.inverted_file_path):
@@ -925,16 +925,16 @@ class MainController():
         self.object_inverted[self.curr_object] = is_inverted
         self.save_inverted()
         
-        status = "Invertido" if is_inverted else "Normal"
-        self.gui.text(f"Objeto {self.curr_object} definido como: {status}")
+        status = "Inverted" if is_inverted else "Normal"
+        self.gui.text(f"Object {self.curr_object} set to: {status}")
 
     def on_fast_click_toggled(self, state):
         is_fast = (state == 2)  # Qt.CheckState.Checked
         if hasattr(self.click_ctrl, 'set_fast_mode'):
             self.click_ctrl.set_fast_mode(is_fast)
-            self.gui.text(f"Modo rapido de clique {'ativado' if is_fast else 'desativado'}.")
+            self.gui.text(f"Fast click mode {'enabled' if is_fast else 'disabled'}.")
         else:
-            self.gui.text("Modo rapido nao e suportado pelo segmentador atual.")
+            self.gui.text("Fast mode is not supported by the current segmenter.")
 
     def initialize_networks(self) -> None:
         download_models_if_needed()
@@ -973,11 +973,11 @@ class MainController():
         if model_name == 'RITM':
             self.click_ctrl = self.ritm_ctrl
             self.active_model_name = 'RITM'
-            self.gui.text("Modelo alterado para: RITM (Local)")
+            self.gui.text("Model changed to: RITM (Local)")
         elif model_name == 'SAM2':
             self.click_ctrl = self.sam2_ctrl
             self.active_model_name = 'SAM2'
-            self.gui.text("Modelo alterado para: SAM 2 (API Remota)")
+            self.gui.text("Model changed to: SAM 2 (Remote API)")
 
     def hit_number_key(self, number: int):
         number = int(number)
@@ -1014,17 +1014,17 @@ class MainController():
 
         if self.app_mode == 'view':
             if action in ['left', 'right']:
-                self.gui.text("Edição bloqueada neste modo.")
+                self.gui.text("Editing is locked in this mode.")
                 return
 
         if action == 'pick':
             target_object = self.curr_mask[int(y), int(x)]
-            
+
             if target_object == 0:
-                self.gui.text("Fundo (Background) clicado. Nenhum objeto selecionado.")
+                self.gui.text("Background clicked. No object selected.")
                 return
 
-            self.gui.text(f"Objeto {target_object} selecionado pelo clique.")
+            self.gui.text(f"Object {target_object} selected by click.")
             self.hit_number_key(target_object)
             return
 
@@ -1036,8 +1036,8 @@ class MainController():
             self.negative_anchors[self.curr_object].append((self.curr_ti, x, y))
             n = len(self.negative_anchors[self.curr_object])
             self.gui.text(
-                f"Vértice {n} da cerca do Obj {self.curr_object} "
-                f"em ({int(x)}, {int(y)}) frame {self.curr_ti}."
+                f"Vertex {n} of the fence for Obj {self.curr_object} "
+                f"at ({int(x)}, {int(y)}) frame {self.curr_ti}."
             )
             # Redesenha imediatamente para mostrar o vértice e a polyline.
             self.gui.main_canvas.update()
@@ -1279,13 +1279,13 @@ class MainController():
             if 0 <= target_frame < self.length:
                 self.gui.tl_slider.setValue(target_frame)
             else:
-                self.gui.text(f"Frame inválido: {target_frame}. Deve estar entre 0 e {self.length - 1}.")
+                self.gui.text(f"Invalid frame: {target_frame}. Must be between 0 and {self.length - 1}.")
                 self.gui.lcd.blockSignals(True)
                 self.gui.lcd.setText(f'{self.curr_ti} / {self.length - 1}')
                 self.gui.lcd.blockSignals(False)
 
         except ValueError:
-            self.gui.text(f"Entrada inválida: '{current_text}' não é um número.")
+            self.gui.text(f"Invalid input: '{current_text}' is not a number.")
             self.gui.lcd.blockSignals(True)
             self.gui.lcd.setText(f'{self.curr_ti} / {self.length - 1}')
             self.gui.lcd.blockSignals(False)
@@ -1462,10 +1462,12 @@ class MainController():
                 # ==========================================================
 
                 # --- MASK PRESERVATION ---
+                print(f"DEBUG MASK: single_object_propagation={self.single_object_propagation}")
                 if self.single_object_propagation is not None:
                     # Single-object mode: keep only the selected object's channel from CUTIE
                     sel_id = self.single_object_propagation
                     propagated_channel = self.curr_prob[sel_id].clone()
+                    print(f"DEBUG MASK: sel_id={sel_id}, propagated_channel max={propagated_channel.max():.4f}, nonzero={(propagated_channel > 0.5).sum().item()}")
 
                     # Load existing mask from disk
                     existing_mask_np = self.res_man.get_mask(self.curr_ti)
@@ -1490,9 +1492,13 @@ class MainController():
 
                     # Overwrite only the selected object's channel
                     self.curr_prob[sel_id] = propagated_channel
+                    sel_pixels = propagated_channel > 0.5
+                    self.curr_prob[0][sel_pixels] = 0.0
 
                 else:
                     # Normal multi-object mode: existing preservation logic
+                    propagated_mask_raw = torch.argmax(self.curr_prob, dim=0)
+                    print(f"DEBUG MASK: normal mode, argmax unique: {torch.unique(propagated_mask_raw).cpu().numpy()}")
                     existing_mask_np = self.res_man.get_mask(self.curr_ti)
                     if existing_mask_np is not None:
                         existing_mask_t = torch.from_numpy(existing_mask_np).to(self.device, dtype=torch.long)
@@ -1514,6 +1520,7 @@ class MainController():
 
                 # Mantém o array numpy atualizado para as funções de visualização da UI
                 self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
+                print(f"DEBUG MASK: curr_mask unique after preservation: {np.unique(self.curr_mask)}")
 
                 # --- FISCAL YOLO (disabled during single-object propagation) ---
                 yolo_candidates = self.yolo_data.get(self.curr_ti, []) if self.single_object_propagation is None else []
@@ -1526,7 +1533,7 @@ class MainController():
                         bbox = det['bbox_xyxy']
                         if self.is_box_empty_in_mask(bbox, self.curr_mask):
                             class_name = det.get('class_name', 'Unknown')
-                            self.gui.text(f"ALERTA: Novo objeto detectado: {class_name}")
+                            self.gui.text(f"ALERT: New object detected: {class_name}")
                             
                             # Ação Automática SAM
                             next_obj_id = self.num_objects + 1
@@ -1590,7 +1597,7 @@ class MainController():
 
                 if stop_propagation:
                     self.propagating = False
-                    self.gui.text(f"Pausado para novo objeto {self.num_objects}.")
+                    self.gui.text(f"Paused for new object {self.num_objects}.")
                     self.hit_number_key(self.num_objects)
                     print(f"DEBUG: Propagação pausada no frame {self.curr_ti}")
                     break
@@ -1774,7 +1781,7 @@ class MainController():
                         bbox = det['bbox_xyxy']
                         if self.is_box_empty_in_mask(bbox, self.curr_mask):
                             class_name = det.get('class_name', 'Unknown')
-                            self.gui.text(f"ALERTA: Novo objeto detectado: {class_name}")
+                            self.gui.text(f"ALERT: New object detected: {class_name}")
                             
                             # Ação Automática SAM
                             next_obj_id = self.num_objects + 1
@@ -1829,7 +1836,7 @@ class MainController():
 
                 if stop_propagation:
                     self.propagating = False
-                    self.gui.text(f"Pausado para novo objeto {self.num_objects}.")
+                    self.gui.text(f"Paused for new object {self.num_objects}.")
                     self.hit_number_key(self.num_objects)
                     print(f"DEBUG: Propagação pausada no frame {self.curr_ti}")
                     break
@@ -1860,7 +1867,7 @@ class MainController():
         if not self.negative_anchors:
             return
 
-        self.gui.text("Calculando rastreamento de pontos de contenção por objeto...")
+        self.gui.text("Calculating containment point tracking per object...")
         self.gui.process_events()
 
         # Carrega todos os frames uma única vez (evita I/O repetido por objeto).
@@ -1898,10 +1905,10 @@ class MainController():
             self.tracked_visibility[obj_id] = pred_visibility.squeeze(0)
 
             self.gui.text(
-                f"  Obj {obj_id}: {len(anchors)} ponto(s) rastreado(s) com sucesso."
+                f"  Obj {obj_id}: {len(anchors)} point(s) tracked successfully."
             )
 
-        self.gui.text("Rastreamento concluído para todos os objetos.")
+        self.gui.text("Tracking completed for all objects.")
 
     def is_box_empty_in_mask(self, bbox, mask_np, threshold=0.1):
         """
@@ -2190,7 +2197,7 @@ class MainController():
         self.tracked_visibility.pop(target, None)
 
         n = len(cleared_anchors)
-        self.gui.text(f"Polyline do Obj {target} limpa ({n} vértice(s) removido(s)).")
+        self.gui.text(f"Polyline of Obj {target} cleared ({n} vertex(es) removed).")
         self.gui.main_canvas.update()
         self.save_polylines()
 
@@ -2464,7 +2471,7 @@ class MainController():
             with open(polylines_path, 'w') as f:
                 json.dump(serializable, f, indent=4)
         except Exception as e:
-            self.gui.text(f"Erro ao salvar polylines: {e}")
+            self.gui.text(f"Error saving polylines: {e}")
 
 
     def on_add_connection(self, peer_id: int) -> None:
@@ -2497,9 +2504,9 @@ class MainController():
 
         if action == 'pick':
             if target == 0:
-                self.gui.text("Background clicado — nenhum objeto selecionado.")
+                self.gui.text("Background clicked — no object selected.")
                 return
-            self.gui.text(f"Objeto Base alterado para ID {target}.")
+            self.gui.text(f"Base object changed to ID {target}.")
             self.hit_number_key(target)
 
         elif action == 'left':

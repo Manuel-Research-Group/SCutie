@@ -143,7 +143,7 @@ class GUI(QWidget):
 
         self.menu_workspace = self.menu_bar.addMenu("Workspace")
 
-        self.act_configure_scale = QAction("Configurar Escala...", self)
+        self.act_configure_scale = QAction("Configure Scale...", self)
         self.act_configure_scale.triggered.connect(controller.on_configure_scale)
         self.menu_workspace.addAction(self.act_configure_scale)
 
@@ -177,12 +177,12 @@ class GUI(QWidget):
         self.mode_action_group.addAction(self.act_connection)
         self.mode_menu.addAction(self.act_connection)
 
-        self.selection_menu = self.menu_bar.addMenu("Seleção")
+        self.selection_menu = self.menu_bar.addMenu("Selection")
         self.selection_action_group = QActionGroup(self)
         self.selection_action_group.setExclusive(True)
 
         # Ferramenta: Clique (Padrão)
-        self.act_sel_click = QAction("Clique Pontual", self)
+        self.act_sel_click = QAction("Point Click", self)
         self.act_sel_click.setCheckable(True)
         self.act_sel_click.setChecked(True)
         self.act_sel_click.setShortcut("Q") # Atalho sugerido
@@ -191,7 +191,7 @@ class GUI(QWidget):
         self.selection_menu.addAction(self.act_sel_click)
 
         # Ferramenta: Bounding Box
-        self.act_sel_bbox = QAction("Bounding Box (Retângulo)", self)
+        self.act_sel_bbox = QAction("Bounding Box (Rectangle)", self)
         self.act_sel_bbox.setCheckable(True)
         self.act_sel_bbox.setShortcut("W") # Atalho sugerido
         self.act_sel_bbox.triggered.connect(lambda: controller.set_selection_tool('bbox'))
@@ -199,7 +199,7 @@ class GUI(QWidget):
         self.selection_menu.addAction(self.act_sel_bbox)
 
         # Ferramenta: Pincel
-        self.act_sel_brush = QAction("Pincel (+)", self)
+        self.act_sel_brush = QAction("Brush (+)", self)
         self.act_sel_brush.setCheckable(True)
         self.act_sel_brush.setShortcut("E") # Atalho
         self.act_sel_brush.triggered.connect(lambda: controller.set_selection_tool('brush'))
@@ -207,7 +207,7 @@ class GUI(QWidget):
         self.selection_menu.addAction(self.act_sel_brush)
 
         # Ferramenta: Borracha
-        self.act_sel_eraser = QAction("Borracha (-)", self)
+        self.act_sel_eraser = QAction("Eraser (-)", self)
         self.act_sel_eraser.setCheckable(True)
         self.act_sel_eraser.setShortcut("R") # Atalho
         self.act_sel_eraser.triggered.connect(lambda: controller.set_selection_tool('eraser'))
@@ -248,6 +248,8 @@ class GUI(QWidget):
         self.act_toggle_yolo.toggled.connect(controller.on_toggle_yolo)
         self.menu_yolo.addAction(self.act_toggle_yolo)
 
+        self.menu_yolo.menuAction().setVisible(False)
+
         # set up some buttons
         self.play_button = QPushButton('Play video')
         self.play_button.clicked.connect(self.on_play_video)
@@ -261,7 +263,7 @@ class GUI(QWidget):
         # TODO: Decide whether Auto-Init Frame (YOLO) is dead code or future work
         self.init_frame_button = QPushButton('Auto-Init Frame (YOLO)')
         self.init_frame_button.clicked.connect(controller.on_init_frame_from_yolo)
-        self.init_frame_button.setToolTip("Gera máscaras automaticamente para todas as detecções YOLO neste frame")
+        self.init_frame_button.setToolTip("Automatically generates masks for all YOLO detections in this frame")
         self.init_frame_button.setVisible(False)
 
         self.propagate_forward_selected_button = QPushButton('Propagate Forward Selected')
@@ -293,7 +295,7 @@ class GUI(QWidget):
         self.progressbar.setMinimumWidth(300)
 
         # Opção RITM
-        self.act_ritm = QAction("RITM (Local - Rápido)", self)
+        self.act_ritm = QAction("RITM (local)", self)
         self.act_ritm.setCheckable(True)
         self.act_ritm.setChecked(True)
         self.act_ritm.triggered.connect(lambda: controller.set_segmentation_model('RITM'))
@@ -301,7 +303,7 @@ class GUI(QWidget):
         self.menu_model.addAction(self.act_ritm)
 
         # Opção SAM 2
-        self.act_sam2 = QAction("SAM 2 (API - Preciso)", self)
+        self.act_sam2 = QAction("SAM2 (API)", self)
         self.act_sam2.setCheckable(True)
         self.act_sam2.triggered.connect(lambda: controller.set_segmentation_model('SAM2'))
         self.model_action_group.addAction(self.act_sam2)
@@ -483,6 +485,7 @@ class GUI(QWidget):
             "rapidos, com leve perda de precisao."
         )
         self.fast_click_checkbox.stateChanged.connect(controller.on_fast_click_toggled)
+        self.fast_click_checkbox.setVisible(False)
 
         navi = QHBoxLayout()
 
@@ -679,7 +682,7 @@ class GUI(QWidget):
         right_area.addLayout(import_area)
 
         brush_label_row = QHBoxLayout()
-        brush_label_row.addWidget(QLabel("🖌 Tam. Pincel / Borracha:"))
+        brush_label_row.addWidget(QLabel("Brush / Eraser Size:"))
         brush_label_row.addWidget(self.brush_size_dial)
         right_area.addLayout(brush_label_row)
 
@@ -749,7 +752,7 @@ class GUI(QWidget):
         self.brush_size_dial.setValue(new_val)
         self.brush_size_dial.blockSignals(False)
         self.controller.brush_size = new_val
-        self.text(f"Pincel: {new_val}px")
+        self.text(f"Brush: {new_val}px")
 
     def toggle_mode_ui(self, mode: str):
         is_annotation = (mode == 'annotation')
@@ -865,7 +868,7 @@ class GUI(QWidget):
 
     def on_brush_size_change(self):
         self.controller.brush_size = self.brush_size_dial.value()
-        self.text(f"Tamanho do pincel alterado para: {self.controller.brush_size}")
+        self.text(f"Brush size changed to: {self.controller.brush_size}")
 
     def resizeEvent(self, event):
         self.controller.show_current_frame()
@@ -1032,11 +1035,11 @@ class GUI(QWidget):
              box_idx = self.controller.get_box_index_at(ex, ey)
              
              if box_idx != -1:
-                 self.text(f"DEBUG: Clique INTERCEPTADO por caixa YOLO (Index: {box_idx})")
-                 
+                 self.text(f"DEBUG: Click INTERCEPTED by YOLO box (Index: {box_idx})")
+
                  # Clique Direito: Modo de Edição (Mover/Esticar)
                  if event.button() == Qt.MouseButton.RightButton:
-                     self.text("DEBUG: Ação YOLO: Editar (Transformar em RubberBand)")
+                     self.text("DEBUG: YOLO action: Edit (convert to RubberBand)")
                      rect = self.controller.get_yolo_box_rect(box_idx)
                      
                      # Converter coords da imagem -> tela para desenhar o rubberband visualmente
@@ -1054,7 +1057,7 @@ class GUI(QWidget):
 
                  # Clique Esquerdo: Aceitar
                  elif event.button() == Qt.MouseButton.LeftButton:
-                     self.text("DEBUG: Ação YOLO: Aceitar candidato")
+                     self.text("DEBUG: YOLO action: Accept candidate")
                      self.controller.accept_yolo_candidate(box_idx)
                      return # Encerra aqui
 
@@ -1068,7 +1071,7 @@ class GUI(QWidget):
             event.button() == Qt.MouseButton.LeftButton and
             modifiers != Qt.KeyboardModifier.ControlModifier):
             
-            self.text("DEBUG: Iniciando BBox Manual (RubberBand)")
+            self.text("DEBUG: Starting Manual BBox (RubberBand)")
             self.origin_mouse_pos = event.position().toPoint()
             self.rubber_band.setGeometry(QRect(self.origin_mouse_pos, QSize()))
             self.rubber_band.show()
@@ -1082,35 +1085,35 @@ class GUI(QWidget):
         # Shift + Clique Direito = Track Negative (Âncora de Fundo)
         if (modifiers == Qt.KeyboardModifier.ShiftModifier and event.button() == Qt.MouseButton.RightButton):
             action = 'track_negative'
-            self.text("DEBUG: Ação definida: TRACK NEGATIVE (Âncora de Fundo)")
+            self.text("DEBUG: Action set: TRACK NEGATIVE (Background Anchor)")
 
         # Ctrl + Clique Esquerdo = Pick (Selecionar objeto clicado)
         elif (modifiers == Qt.KeyboardModifier.ControlModifier and 
             event.button() == Qt.MouseButton.LeftButton):
             action = 'pick'
-            self.text("DEBUG: Ação definida: PICK")
+            self.text("DEBUG: Action set: PICK")
         
         # Botão Esquerdo = Clique Positivo (Add)
         elif event.button() == Qt.MouseButton.LeftButton:
             action = 'left'
-            self.text("DEBUG: Ação definida: LEFT (Add)")
+            self.text("DEBUG: Action set: LEFT (Add)")
         
         # Botão Direito = Clique Negativo (Remove)
         elif event.button() == Qt.MouseButton.RightButton:
             action = 'right'
-            self.text("DEBUG: Ação definida: RIGHT (Remove)")
+            self.text("DEBUG: Action set: RIGHT (Remove)")
         
         # Botão do Meio = Trocar visualização overlay
         elif event.button() == Qt.MouseButton.MiddleButton:
             action = 'middle'
-            self.text("DEBUG: Ação definida: MIDDLE (Vis)")
+            self.text("DEBUG: Action set: MIDDLE (Vis)")
 
         if action is None:
-            self.text("DEBUG: Nenhuma ação mapeada, ignorando.")
+            self.text("DEBUG: No action mapped, ignoring.")
             return
-        
+
         # Executa a ação final
-        self.text(f"DEBUG: Enviando clique para controller (Ação: {action})")
+        self.text(f"DEBUG: Sending click to controller (Action: {action})")
         self.click_fn(action, ex, ey)
 
     def on_mouse_motion(self, event):
@@ -1145,7 +1148,7 @@ class GUI(QWidget):
             self.controller.is_drawing = False
             # Uma única sincronização GPU ao terminar o traço
             self.controller.finish_brush_stroke()
-            self.text("Traço finalizado e salvo.")
+            self.text("Stroke finished and saved.")
             return
 
         # Finaliza o desenho da BBox
@@ -1191,12 +1194,12 @@ class GUI(QWidget):
 
     def open_scale_dialog(self, current_value: float = None) -> float:
         dialog = QDialog(self)
-        dialog.setWindowTitle("Configurar Escala do Workspace")
+        dialog.setWindowTitle("Configure Workspace Scale")
 
         layout = QVBoxLayout(dialog)
 
-        label = QLabel("A escala deste workspace ainda não foi definida.\n"
-                       "Informe o fator de escala em milímetros.")
+        label = QLabel("This workspace's scale has not been set yet.\n"
+                       "Enter the scale factor in millimeters.")
         layout.addWidget(label)
 
         form = QFormLayout()
@@ -1209,7 +1212,7 @@ class GUI(QWidget):
         display_value = f"{current_value:.2f}" if current_value is not None else "1.00"
         scale_input.setText(display_value)
 
-        form.addRow("Escala (mm):", scale_input)
+        form.addRow("Scale (mm):", scale_input)
         layout.addLayout(form)
 
         error_label = QLabel("")
@@ -1226,10 +1229,10 @@ class GUI(QWidget):
             try:
                 value = float(text)
             except ValueError:
-                error_label.setText("Formato inválido. Use o formato: 123.45")
+                error_label.setText("Invalid format. Use the format: 123.45")
                 return
             if value <= 0:
-                error_label.setText("A escala deve ser maior que zero.")
+                error_label.setText("The scale must be greater than zero.")
                 return
             dialog.done(1)
 

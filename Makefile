@@ -108,4 +108,4 @@ start:
 	@echo "🚀 Iniciando o SCutie para o workspace '$(workspace)'..."
 	@eval "$$(conda shell.bash hook)" && \
 	conda activate cutie-with-point-negative-point-tracking && \
-	python3 interactive_demo.py --workspace workspaces/$(workspace)
+	QT_QPA_PLATFORM=xcb python3 interactive_demo.py --workspace workspaces/$(workspace)
