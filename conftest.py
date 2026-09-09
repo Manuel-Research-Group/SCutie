@@ -21,6 +21,7 @@ _MOCKED = [
     'cotracker.predictor',
     'PySide6',
     'PySide6.QtWidgets',
+    'PySide6.QtCore',
     'gui.interaction',
     'gui.interactive_utils',
     'gui.resource_manager',

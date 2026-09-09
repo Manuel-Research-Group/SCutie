@@ -2474,6 +2474,58 @@ class MainController():
             self.gui.text(f"Error saving polylines: {e}")
 
 
+    def record_click(self, obj_id: int, frame_idx: int, x: float, y: float,
+                     is_neg: bool, dims=None) -> None:
+        """
+        Registra um clique (positivo ou negativo) para o par (objeto, frame) e
+        persiste imediatamente em clicks.json.
+
+        Semântica acumulativa: os cliques são anexados por (objeto, frame) e
+        NUNCA são apagados ao trocar de objeto — clicks.json reflete todos os
+        cliques que geraram a máscara daquele objeto naquele frame. Workspaces
+        legados (anteriores a esta feature) simplesmente não têm clicks.json.
+        """
+        frames = self.object_clicks.setdefault(obj_id, {})
+        entry = frames.get(frame_idx)
+        if entry is None:
+            entry = {"pos": [], "neg": [], "dims": dims}
+            frames[frame_idx] = entry
+        elif dims is not None and not entry.get("dims"):
+            entry["dims"] = dims
+
+        point = [int(round(x)), int(round(y))]
+        if is_neg:
+            entry["neg"].append(point)
+        else:
+            entry["pos"].append(point)
+        self.save_clicks()
+
+    def save_clicks(self) -> None:
+        """Serializa self.object_clicks para clicks.json no workspace."""
+        try:
+            serializable = {
+                str(obj_id): {str(f): entry for f, entry in frames.items()}
+                for obj_id, frames in self.object_clicks.items()
+            }
+            with open(self.clicks_file_path, 'w') as f:
+                json.dump(serializable, f, indent=4)
+        except Exception as e:
+            self.gui.text(f"Error saving clicks: {e}")
+
+    def load_clicks(self) -> None:
+        """Carrega clicks.json, restaurando os cliques da sessão anterior."""
+        if not path.exists(self.clicks_file_path):
+            return
+        try:
+            with open(self.clicks_file_path, 'r') as f:
+                data = json.load(f)
+            self.object_clicks = {
+                int(obj_id): {int(f): entry for f, entry in frames.items()}
+                for obj_id, frames in data.items()
+            }
+        except Exception as e:
+            log.error(f"Failed to load clicks: {e}")
+
     def on_add_connection(self, peer_id: int) -> None:
         a, b = self.curr_object, peer_id
         if b not in self.object_connections.get(a, []):
