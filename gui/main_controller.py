@@ -96,6 +96,11 @@ class MainController():
         self.polylines_file_path = path.join(self.cfg['workspace'], 'polylines.json')
         self.load_polylines()
 
+        # Cliques (positivos/negativos) que geraram cada máscara, por objeto/frame.
+        self.object_clicks: Dict[int, Dict[int, dict]] = {}
+        self.clicks_file_path = path.join(self.cfg['workspace'], 'clicks.json')
+        self.load_clicks()
+
         self.workspace_config_path = path.join(self.cfg['workspace'], 'workspace_config.json')
         self.scale_factor: Optional[float] = None
         self.load_workspace_config()
@@ -1063,7 +1068,13 @@ class MainController():
 
                 # 1. Aplica o seu clique atual (ex: Botão Esquerdo no cano)
                 self.interaction.push_point(x, y, is_neg=(action == 'right'))
-                
+
+                # Persiste o clique real do usuário. Fica ANTES da injeção de
+                # âncoras da polyline abaixo — âncoras não são cliques reais e
+                # não devem entrar em clicks.json.
+                self.record_click(self.curr_object, self.curr_ti, x, y,
+                                  is_neg=(action == 'right'), dims=[self.h, self.w])
+
                 # 2. INJEÇÃO INTELIGENTE: Passa os vértices da polyline deste
                 # objeto para o RITM como cliques negativos (hints de limite).
                 if is_new_interaction:
@@ -2174,6 +2185,10 @@ class MainController():
             if object_id in self.object_sizes:
                 del self.object_sizes[object_id]
                 self.save_sizes()
+
+            if object_id in self.object_clicks:
+                del self.object_clicks[object_id]
+                self.save_clicks()
 
             self.gui.progressbar_update(0)
             self.gui.text(f"Object {object_id} removed. Press Ctrl+Z to Undo.")
