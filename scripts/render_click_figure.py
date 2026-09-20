@@ -32,7 +32,7 @@ def _load_clicks(workspace):
 
 def render_click_figure(workspace, obj_id, frame_idx, out_path, *,
                         mask_alpha=0.45, point_size=220.0, dpi=200,
-                        show_legend=True):
+                        show_legend=False):
     clicks = _load_clicks(workspace)
     if obj_id not in clicks or frame_idx not in clicks[obj_id]:
         raise KeyError(f"No recorded clicks for object {obj_id}, frame {frame_idx}")
@@ -66,7 +66,7 @@ def render_click_figure(workspace, obj_id, frame_idx, out_path, *,
                    facecolors="#22c55e", edgecolors="white", linewidths=1.5,
                    label="Clique positivo", zorder=5)
     if len(neg):
-        ax.scatter(neg[:, 0], neg[:, 1], s=point_size, marker="X",
+        ax.scatter(neg[:, 0], neg[:, 1], s=point_size, marker="o",
                    facecolors="#ef4444", edgecolors="white", linewidths=1.5,
                    label="Clique negativo", zorder=5)
 
@@ -93,11 +93,12 @@ def main():
     p.add_argument("--mask-alpha", type=float, default=0.45)
     p.add_argument("--point-size", type=float, default=220.0)
     p.add_argument("--dpi", type=int, default=200)
-    p.add_argument("--no-legend", action="store_true")
+    p.add_argument("--legend", action="store_true",
+                   help="Show the positive/negative legend (off by default).")
     args = p.parse_args()
 
     kwargs = dict(mask_alpha=args.mask_alpha, point_size=args.point_size,
-                  dpi=args.dpi, show_legend=not args.no_legend)
+                  dpi=args.dpi, show_legend=args.legend)
 
     if args.frame is not None:
         render_click_figure(args.workspace, args.obj, args.frame, args.out, **kwargs)
