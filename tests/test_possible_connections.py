@@ -14,6 +14,7 @@ class _FakeController:
         self.object_models = {}
         self.object_sizes = {}
         self.object_inverted = {}
+        self.use_inverted_flag = True
         self.object_references = {}
 
     def load_possible_connections(self):

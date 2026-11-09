@@ -81,6 +81,12 @@ class MainController():
         self.references_file_path = path.join(self.cfg['workspace'], 'references.json')
         self.load_references()
 
+        # workspace_config precisa vir antes do inverted.json: use_inverted_flag decide se ele é lido.
+        self.workspace_config_path = path.join(self.cfg['workspace'], 'workspace_config.json')
+        self.scale_factor: Optional[float] = None
+        self.use_inverted_flag: bool = True
+        self.load_workspace_config()
+
         self.object_inverted: Dict[int, bool] = {}
         self.inverted_file_path = path.join(self.cfg['workspace'], 'inverted.json')
         self.load_inverted()
@@ -101,10 +107,6 @@ class MainController():
         self.clicks_file_path = path.join(self.cfg['workspace'], 'clicks.json')
         self.load_clicks()
 
-        self.workspace_config_path = path.join(self.cfg['workspace'], 'workspace_config.json')
-        self.scale_factor: Optional[float] = None
-        self.load_workspace_config()
-
         # Update num_objects from loaded labels if higher
         cfg['num_objects'] = max(cfg['num_objects'], max(self.object_labels.keys()) if self.object_labels else 0)
         self.initialize_networks()
@@ -116,6 +118,7 @@ class MainController():
         self.processor = InferenceCore(self.cutie, self.cfg)
         self.num_objects = cfg['num_objects'] # Re-set num_objects after potential update
         self.gui = GUI(self, self.cfg)
+        self.gui.set_inverted_flag_visible(self.use_inverted_flag)
 
         # initialize control info
         self.length: int = self.res_man.length
@@ -799,14 +802,24 @@ class MainController():
                 with open(self.workspace_config_path, 'r') as f:
                     data = json.load(f)
                     self.scale_factor = data.get('scale_factor', None)
+                    # Ausente => True: workspaces antigos mantêm o comportamento legado.
+                    self.use_inverted_flag = bool(data.get('use_inverted_flag', True))
                 log.info(f"Loaded workspace scale factor: {self.scale_factor}")
             except Exception as e:
                 log.error(f"Failed to load workspace config: {e}")
 
     def save_workspace_config(self, value: float):
         try:
+            data = {}
+            if path.exists(self.workspace_config_path):
+                try:
+                    with open(self.workspace_config_path, 'r') as f:
+                        data = json.load(f)
+                except Exception as e:
+                    log.error(f"Failed to read workspace config before saving: {e}")
+            data["scale_factor"] = value
             with open(self.workspace_config_path, 'w') as f:
-                json.dump({"scale_factor": value}, f, indent=4)
+                json.dump(data, f, indent=4)
             self.scale_factor = value
             log.info(f"Saved workspace scale factor: {value}")
         except Exception as e:
@@ -908,6 +921,8 @@ class MainController():
         self.gui.text(f"Object {self.curr_object}: {status}")
 
     def load_inverted(self):
+        if not self.use_inverted_flag:
+            return
         if path.exists(self.inverted_file_path):
             try:
                 with open(self.inverted_file_path, 'r') as f:
@@ -918,6 +933,8 @@ class MainController():
                 log.error(f"Failed to load inverted definitions: {e}")
 
     def save_inverted(self):
+        if not self.use_inverted_flag:
+            return
         try:
             with open(self.inverted_file_path, 'w') as f:
                 json.dump(self.object_inverted, f, indent=4)
@@ -2665,7 +2682,8 @@ class MainController():
             if (self.object_labels.get(candidate, "") == label
                     and self.object_models.get(candidate, "") == model
                     and self.object_sizes.get(candidate, "") == size
-                    and self.object_inverted.get(candidate, False) == inverted):
+                    and (not self.use_inverted_flag
+                         or self.object_inverted.get(candidate, False) == inverted)):
                 return candidate
         return None
 

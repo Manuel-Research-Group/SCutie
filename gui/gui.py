@@ -897,6 +897,10 @@ class GUI(QWidget):
         self.reference_checkbox.setChecked(is_reference)
         self.reference_checkbox.blockSignals(False)
 
+    def set_inverted_flag_visible(self, visible: bool):
+        # setVisible (não setEnabled): a troca de modo só mexe em setEnabled.
+        self.inverted_checkbox.setVisible(visible)
+
     def update_object_inverted(self, is_inverted: bool):
         self.inverted_checkbox.blockSignals(True)
         self.inverted_checkbox.setChecked(is_inverted)
