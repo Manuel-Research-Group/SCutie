@@ -77,6 +77,14 @@ def test_flag_false_read_from_config():
         assert ctrl.use_inverted_flag is False
 
 
+def test_flag_string_false_is_false():
+    with tempfile.TemporaryDirectory() as tmp:
+        ctrl = _FakeController(tmp)
+        _write(ctrl.workspace_config_path, {"use_inverted_flag": "false"})
+        ctrl.load_workspace_config()
+        assert ctrl.use_inverted_flag is False
+
+
 def test_save_workspace_config_preserves_other_keys():
     with tempfile.TemporaryDirectory() as tmp:
         ctrl = _FakeController(tmp)

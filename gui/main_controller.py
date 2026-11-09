@@ -803,7 +803,11 @@ class MainController():
                     data = json.load(f)
                     self.scale_factor = data.get('scale_factor', None)
                     # Ausente => True: workspaces antigos mantêm o comportamento legado.
-                    self.use_inverted_flag = bool(data.get('use_inverted_flag', True))
+                    flag = data.get('use_inverted_flag', True)
+                    if not isinstance(flag, bool):
+                        # Edição manual tipo "false": bool("false") seria True.
+                        flag = str(flag).strip().lower() not in ('false', '0', 'no', '')
+                    self.use_inverted_flag = flag
                 log.info(f"Loaded workspace scale factor: {self.scale_factor}")
             except Exception as e:
                 log.error(f"Failed to load workspace config: {e}")
