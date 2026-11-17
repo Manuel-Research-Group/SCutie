@@ -142,3 +142,8 @@ dmypy.json
 
 workspaces
 docs/superpowers
+
+# Local debug images and run logs
+/*.png
+/*.jpg
+anotacoes.txt

@@ -1,0 +1,75 @@
+diff --git a/gui/interaction.py b/gui/interaction.py
+index 69aabc2..bb51dbd 100644
+--- a/gui/interaction.py
++++ b/gui/interaction.py
+@@ -91,9 +91,18 @@ class ClickInteraction(Interaction):
+ 
+     def predict(self) -> torch.Tensor:
+         self.out_prob = self.prev_mask.clone()
+-        # a small hack to allow the interacting object to overwrite existing masks
+-        # without remembering all the object probabilities
+-        self.out_prob = torch.clamp(self.out_prob, max=0.9)
+-        self.out_prob[self.tar_obj] = self.obj_mask
++        
++        # --- NOVA REGRA: Proteger os pixels de outros objetos já existentes ---
++        # Cria uma máscara consolidada dos OUTROS objetos (onde a probabilidade > 0.5)
++        other_objs_mask = torch.zeros_like(self.obj_mask, dtype=torch.bool)
++        for i in range(1, self.out_prob.shape[0]):
++            if i != self.tar_obj:
++                other_objs_mask |= (self.out_prob[i] > 0.5)
++        
++        # Zera a predição do clique atual nos pixels onde já existe outro objeto
++        safe_obj_mask = self.obj_mask.clone()
++        safe_obj_mask[other_objs_mask] = 0.0
++        
++        self.out_prob[self.tar_obj] = safe_obj_mask
+         self.out_prob = aggregate_wbg(self.out_prob[1:], keep_bg=True, hard=True)
+         return self.out_prob
+diff --git a/gui/main_controller.py b/gui/main_controller.py
+index a88871e..fcd973c 100644
+--- a/gui/main_controller.py
++++ b/gui/main_controller.py
+@@ -941,6 +941,8 @@ class MainController():
+             print(f"DEBUG: idx_mask unique values: {torch.unique(idx_mask_torch)}")
+             print(f"DEBUG: Passando object_ids: {all_object_ids}")
+             
++            self.active_prop_objects = torch.unique(idx_mask_torch).to(torch.long)
++
+             self.curr_prob = self.processor.step(
+                 self.curr_image_torch,
+                 idx_mask_torch,              # Passa como H x W (não como canais separados)
+@@ -985,6 +987,34 @@ class MainController():
+                 
+                 print(f"curr_prob.shape após step: {self.curr_prob.shape}")
+                 
++                existing_mask_np = self.res_man.get_mask(self.curr_ti)
++                if existing_mask_np is not None:
++                    existing_mask_t = torch.from_numpy(existing_mask_np).to(self.device, dtype=torch.long)
++                    propagated_mask_t = torch.max(self.curr_prob, dim=0).indices
++                    
++                    final_mask_t = propagated_mask_t.clone()
++                    
++                    # 1. Restaurar objetos do futuro (ex: marcados no frame 50) que não estão na propagação atual
++                    # (Se o objeto estava no frame, mas não estava no frame inicial 25, nós o resgatamos)
++                    untracked_mask = (existing_mask_t > 0) & (~torch.isin(existing_mask_t, self.active_prop_objects))
++                    final_mask_t[untracked_mask] = existing_mask_t[untracked_mask]
++                    
++                    # 2. Impedir que a propagação sobrescreva pixels de outros objetos já consolidados na tela
++                    conflict_mask = (existing_mask_t > 0) & (final_mask_t > 0) & (existing_mask_t != final_mask_t)
++                    final_mask_t[conflict_mask] = existing_mask_t[conflict_mask]
++                    
++                    # Se salvamos algum pixel, atualizamos a memória do Cutie para ele aprender essa correção
++                    if untracked_mask.any() or conflict_mask.any():
++                        self.curr_prob = index_numpy_to_one_hot_torch(final_mask_t.cpu().numpy(), self.num_objects + 1).to(self.device)
++                        self.processor.step(
++                            self.curr_image_torch,
++                            final_mask_t,
++                            objects=all_object_ids,
++                            idx_mask=True,
++                            force_permanent=True
++                        )
++                # --- FIM DA CORREÇÃO ---
++
+                 self.curr_mask = torch_prob_to_numpy_mask(self.curr_prob)
+ 
+                 # --- FISCAL YOLO ---
